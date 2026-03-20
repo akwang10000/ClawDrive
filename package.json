@@ -1,0 +1,57 @@
+{
+  "name": "clawdrive-vscode",
+  "displayName": "ClawDrive for VS Code",
+  "description": "Natural-language IDE agent bridge for OpenClaw.",
+  "version": "0.1.0",
+  "publisher": "wangtuo",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:clawdrive.showStatus"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "clawdrive.showStatus",
+        "title": "ClawDrive: Show Status"
+      }
+    ],
+    "configuration": {
+      "title": "ClawDrive",
+      "properties": {
+        "clawdrive.gateway.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Gateway host for ClawDrive."
+        },
+        "clawdrive.gateway.port": {
+          "type": "number",
+          "default": 3100,
+          "description": "Gateway port for ClawDrive."
+        },
+        "clawdrive.displayName": {
+          "type": "string",
+          "default": "ClawDrive",
+          "description": "Display name advertised by the extension."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.8.3"
+  }
+}
