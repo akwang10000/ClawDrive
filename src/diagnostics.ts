@@ -5,6 +5,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { getConfig } from "./config";
 import type { ConnectionState } from "./gateway-client";
+import { t } from "./i18n";
 import { getOutputChannel } from "./logger";
 import { getRegisteredCommands } from "./commands/registry";
 
@@ -79,13 +80,13 @@ function tryLoadLocalGatewayConfig(): LocalGatewayConfigSnapshot | null {
 function formatLevel(level: FindingLevel): string {
   switch (level) {
     case "ok":
-      return "OK";
+      return t("diagnosis.ok");
     case "info":
-      return "INFO";
+      return t("diagnosis.info");
     case "warn":
-      return "WARN";
+      return t("diagnosis.warn");
     default:
-      return "ERROR";
+      return t("diagnosis.error");
   }
 }
 
@@ -94,6 +95,16 @@ function summarize(findings: DiagnosisFinding[]): { errors: number; warnings: nu
     errors: findings.filter((finding) => finding.level === "error").length,
     warnings: findings.filter((finding) => finding.level === "warn").length,
   };
+}
+
+function connectionStateText(state: ConnectionState): string {
+  if (state === "connected") {
+    return t("status.connected");
+  }
+  if (state === "connecting") {
+    return t("status.connecting");
+  }
+  return t("status.disconnected");
 }
 
 export function isCallableWithLocalConfig(): boolean {
@@ -119,30 +130,27 @@ export async function runConnectionDiagnosis(state: ConnectionState): Promise<vo
   const cfg = getConfig();
   const findings: DiagnosisFinding[] = [];
   const commands = getRegisteredCommands();
+  const gatewayUrl = `${cfg.gatewayTls ? "wss" : "ws"}://${cfg.gatewayHost}:${cfg.gatewayPort}`;
 
   findings.push({
     level: "info",
-    message: `Configured gateway: ${cfg.gatewayTls ? "wss" : "ws"}://${cfg.gatewayHost}:${cfg.gatewayPort}`,
+    message: t("diagnosis.gatewayConfigured", gatewayUrl),
   });
   findings.push({
     level: cfg.gatewayToken.trim() ? "ok" : "warn",
-    message: cfg.gatewayToken.trim() ? "Gateway token is configured." : "Gateway token is empty.",
-    detail: cfg.gatewayToken.trim()
-      ? undefined
-      : "Set clawdrive.gateway.token before connecting to a protected Gateway.",
+    message: cfg.gatewayToken.trim() ? t("diagnosis.tokenConfigured") : t("diagnosis.tokenMissing"),
+    detail: cfg.gatewayToken.trim() ? undefined : t("diagnosis.tokenMissingDetail"),
   });
   findings.push({
     level: commands.length > 0 ? "ok" : "error",
-    message: commands.length > 0
-      ? `Advertised command surface is ready (${commands.join(", ")}).`
-      : "Advertised command surface is empty.",
+    message: commands.length > 0 ? t("diagnosis.commandsReady", commands.join(", ")) : t("diagnosis.commandsEmpty"),
   });
 
   if (cfg.gatewayTls && isLoopbackHost(cfg.gatewayHost)) {
     findings.push({
       level: "warn",
-      message: "TLS is enabled for a loopback Gateway host.",
-      detail: "Most local OpenClaw gateways use ws://127.0.0.1:18789 rather than TLS.",
+      message: t("diagnosis.loopbackTlsWarn"),
+      detail: t("diagnosis.loopbackTlsWarnDetail"),
     });
   }
 
@@ -150,12 +158,12 @@ export async function runConnectionDiagnosis(state: ConnectionState): Promise<vo
     await probeTcpPort(cfg.gatewayHost, cfg.gatewayPort);
     findings.push({
       level: "ok",
-      message: "Gateway TCP port is reachable.",
+      message: t("diagnosis.gatewayReachable"),
     });
   } catch (error) {
     findings.push({
       level: "error",
-      message: `Cannot reach ${cfg.gatewayHost}:${cfg.gatewayPort}.`,
+      message: t("diagnosis.gatewayUnreachable", cfg.gatewayHost, cfg.gatewayPort),
       detail: error instanceof Error ? error.message : String(error),
     });
   }
@@ -166,63 +174,64 @@ export async function runConnectionDiagnosis(state: ConnectionState): Promise<vo
       if (!localConfig) {
         findings.push({
           level: "warn",
-          message: "Local OpenClaw config was not found at ~/.openclaw/openclaw.json.",
+          message: t("diagnosis.localConfigMissing"),
         });
       } else {
         findings.push({
           level: "info",
-          message: `Loaded local OpenClaw config from ${localConfig.path}.`,
+          message: t("diagnosis.localConfigLoaded", localConfig.path),
         });
         if (localConfig.token && cfg.gatewayToken.trim() && localConfig.token !== cfg.gatewayToken.trim()) {
           findings.push({
             level: "warn",
-            message: "Configured Gateway token does not match the local OpenClaw token.",
-            detail: "Copy gateway.auth.token from ~/.openclaw/openclaw.json if this is your local Gateway.",
+            message: t("diagnosis.tokenMismatch"),
+            detail: t("diagnosis.tokenMismatchDetail"),
           });
         }
         if (localConfig.allowCommands && !localConfig.allowCommands.includes("vscode.workspace.info")) {
           findings.push({
             level: "warn",
-            message: "Local allowCommands may block vscode.workspace.info.",
-            detail: "Connected but not callable is likely until vscode.workspace.info is included.",
+            message: t("diagnosis.allowCommandsBlocked"),
+            detail: t("diagnosis.allowCommandsBlockedDetail"),
           });
         }
       }
     } catch (error) {
       findings.push({
         level: "warn",
-        message: "Could not read the local OpenClaw config for diagnosis.",
+        message: t("diagnosis.localConfigReadFailed"),
         detail: error instanceof Error ? error.message : String(error),
       });
     }
   } else {
     findings.push({
       level: "info",
-      message: "Remote Gateway host detected; local config checks were skipped.",
+      message: t("diagnosis.remoteGateway"),
     });
   }
 
   findings.push({
     level: state === "connected" ? "ok" : "warn",
-    message: `Current session state: ${state}.`,
-    detail: state === "connected" ? undefined : "Run ClawDrive: Connect to establish a Gateway session.",
+    message: t("diagnosis.sessionState", connectionStateText(state)),
+    detail: state === "connected" ? undefined : t("diagnosis.sessionStateDetail"),
   });
+
+  const callable = isCallableWithLocalConfig();
   findings.push({
-    level: isCallableWithLocalConfig() ? "ok" : "warn",
-    message: `Callable state: ${isCallableWithLocalConfig() ? "ready" : "blocked or uncertain"}.`,
-    detail: isCallableWithLocalConfig()
-      ? undefined
-      : "Check local allowCommands and confirm the advertised command surface is permitted.",
+    level: callable ? "ok" : "warn",
+    message: t("diagnosis.callableState", callable ? t("status.ready") : t("status.blocked")),
+    detail: callable ? undefined : t("diagnosis.callableStateDetail"),
   });
+
   findings.push({
     level: "info",
-    message: "Provider ready: not implemented in Phase 1.",
+    message: t("diagnosis.provider"),
   });
 
   const output = getOutputChannel();
   output.show(true);
   output.appendLine("");
-  output.appendLine("=== ClawDrive Connection Diagnosis ===");
+  output.appendLine(t("diagnosis.title"));
   for (const finding of findings) {
     output.appendLine(`${formatLevel(finding.level)}  ${finding.message}`);
     if (finding.detail) {
@@ -231,10 +240,14 @@ export async function runConnectionDiagnosis(state: ConnectionState): Promise<vo
   }
 
   const summary = summarize(findings);
-  const summaryText = `Diagnosis complete: ${summary.errors} error(s), ${summary.warnings} warning(s).`;
-  if (summary.errors > 0) {
-    await vscode.window.showWarningMessage(summaryText, "Open Log");
-  } else {
-    await vscode.window.showInformationMessage(summaryText, "Open Log");
+  const summaryText = t("notify.diagnosisSummary", summary.errors, summary.warnings);
+  const openLogText = t("notify.openLog");
+  const action =
+    summary.errors > 0
+      ? await vscode.window.showWarningMessage(summaryText, openLogText)
+      : await vscode.window.showInformationMessage(summaryText, openLogText);
+
+  if (action === openLogText) {
+    output.show(true);
   }
 }

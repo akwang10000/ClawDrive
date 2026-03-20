@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { ConnectionState } from "./gateway-client";
+import { t } from "./i18n";
 
 export class ClawDriveStatusBar {
   private readonly item: vscode.StatusBarItem;
@@ -20,10 +21,17 @@ export class ClawDriveStatusBar {
       this.item.text = "$(debug-disconnect) ClawDrive";
     }
 
+    const stateText =
+      state === "connected"
+        ? t("status.connected")
+        : state === "connecting"
+          ? t("status.connecting")
+          : t("status.disconnected");
+
     this.item.tooltip = [
-      `Connection: ${state}`,
-      `Callable: ${callable ? "yes" : "no"}`,
-      "Provider ready: not configured in Phase 1",
+      t("statusBar.connection", stateText),
+      t("statusBar.callable", callable ? t("status.yes") : t("status.no")),
+      t("statusBar.provider", t("status.notReady")),
     ].join("\n");
   }
 

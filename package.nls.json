@@ -1,0 +1,14 @@
+{
+  "package.command.dashboard": "ClawDrive: Dashboard",
+  "package.command.connect": "ClawDrive: Connect",
+  "package.command.disconnect": "ClawDrive: Disconnect",
+  "package.command.showStatus": "ClawDrive: Show Status",
+  "package.command.diagnose": "ClawDrive: Diagnose Connection",
+  "package.command.settings": "ClawDrive: Settings",
+  "package.config.title": "ClawDrive",
+  "package.config.gateway.host": "Gateway host for ClawDrive.",
+  "package.config.gateway.port": "Gateway port for ClawDrive.",
+  "package.config.gateway.tls": "Use TLS when connecting to the Gateway.",
+  "package.config.gateway.token": "Gateway token for ClawDrive.",
+  "package.config.displayName": "Display name advertised by the extension."
+}

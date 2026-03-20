@@ -30,56 +30,56 @@
     "commands": [
       {
         "command": "clawdrive.dashboard",
-        "title": "ClawDrive: Dashboard"
+        "title": "%package.command.dashboard%"
       },
       {
         "command": "clawdrive.connect",
-        "title": "ClawDrive: Connect"
+        "title": "%package.command.connect%"
       },
       {
         "command": "clawdrive.disconnect",
-        "title": "ClawDrive: Disconnect"
+        "title": "%package.command.disconnect%"
       },
       {
         "command": "clawdrive.showStatus",
-        "title": "ClawDrive: Show Status"
+        "title": "%package.command.showStatus%"
       },
       {
         "command": "clawdrive.diagnoseConnection",
-        "title": "ClawDrive: Diagnose Connection"
+        "title": "%package.command.diagnose%"
       },
       {
         "command": "clawdrive.settings",
-        "title": "ClawDrive: Settings"
+        "title": "%package.command.settings%"
       }
     ],
     "configuration": {
-      "title": "ClawDrive",
+      "title": "%package.config.title%",
       "properties": {
         "clawdrive.gateway.host": {
           "type": "string",
           "default": "127.0.0.1",
-          "description": "Gateway host for ClawDrive."
+          "description": "%package.config.gateway.host%"
         },
         "clawdrive.gateway.port": {
           "type": "number",
           "default": 18789,
-          "description": "Gateway port for ClawDrive."
+          "description": "%package.config.gateway.port%"
         },
         "clawdrive.gateway.tls": {
           "type": "boolean",
           "default": false,
-          "description": "Use TLS when connecting to the Gateway."
+          "description": "%package.config.gateway.tls%"
         },
         "clawdrive.gateway.token": {
           "type": "string",
           "default": "",
-          "description": "Gateway token for ClawDrive."
+          "description": "%package.config.gateway.token%"
         },
         "clawdrive.displayName": {
           "type": "string",
           "default": "ClawDrive",
-          "description": "Display name advertised by the extension."
+          "description": "%package.config.displayName%"
         }
       }
     }

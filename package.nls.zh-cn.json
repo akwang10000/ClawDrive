@@ -1,0 +1,14 @@
+{
+  "package.command.dashboard": "ClawDrive：控制台",
+  "package.command.connect": "ClawDrive：连接",
+  "package.command.disconnect": "ClawDrive：断开连接",
+  "package.command.showStatus": "ClawDrive：显示状态",
+  "package.command.diagnose": "ClawDrive：连接诊断",
+  "package.command.settings": "ClawDrive：设置",
+  "package.config.title": "ClawDrive",
+  "package.config.gateway.host": "ClawDrive 的 Gateway host。",
+  "package.config.gateway.port": "ClawDrive 的 Gateway 端口。",
+  "package.config.gateway.tls": "连接 Gateway 时是否使用 TLS。",
+  "package.config.gateway.token": "ClawDrive 使用的 Gateway token。",
+  "package.config.displayName": "向 Gateway 广告的节点显示名称。"
+}

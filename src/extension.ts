@@ -6,6 +6,7 @@ import { dispatchCommand, getRegisteredCommands } from "./commands/registry";
 import { runConnectionDiagnosis, isCallableWithLocalConfig } from "./diagnostics";
 import { showDashboardPanel } from "./dashboard-panel";
 import { GatewayClient, type ConnectionState } from "./gateway-client";
+import { getCurrentLocale, t } from "./i18n";
 import { getOutputChannel, log } from "./logger";
 import { showSettingsPanel } from "./settings-panel";
 import { ClawDriveStatusBar } from "./status-bar";
@@ -47,7 +48,7 @@ class ClawDriveRuntime {
         this.statusBar.update(state, isCallableWithLocalConfig());
       },
     });
-    log(`Starting Gateway client for ${cfg.gatewayHost}:${cfg.gatewayPort}`);
+    log(t("log.startClient", cfg.gatewayHost, cfg.gatewayPort));
     this.client.start();
   }
 
@@ -56,25 +57,25 @@ class ClawDriveRuntime {
     this.client = null;
     this.connectionState = "disconnected";
     this.statusBar.update(this.connectionState, isCallableWithLocalConfig());
-    log("Gateway client stopped");
+    log(t("log.stopClient"));
   }
 
   async showStatus(): Promise<void> {
     const cfg = getConfig();
     const message = [
-      `Display name: ${cfg.displayName}`,
-      `Gateway: ${cfg.gatewayTls ? "wss" : "ws"}://${cfg.gatewayHost}:${cfg.gatewayPort}`,
-      `Connected: ${this.connectionState === "connected" ? "yes" : "no"}`,
-      `Callable: ${isCallableWithLocalConfig() ? "yes" : "blocked or uncertain"}`,
-      "Provider ready: not configured in Phase 1",
-      `Commands: ${getRegisteredCommands().join(", ") || "(none)"}`,
+      t("showStatus.displayName", cfg.displayName),
+      t("showStatus.gateway", `${cfg.gatewayTls ? "wss" : "ws"}://${cfg.gatewayHost}:${cfg.gatewayPort}`),
+      t("showStatus.connected", this.connectionState === "connected" ? t("status.yes") : t("status.no")),
+      t("showStatus.callable", isCallableWithLocalConfig() ? t("status.ready") : t("status.blocked")),
+      t("showStatus.provider", t("status.notReady")),
+      t("showStatus.commands", getRegisteredCommands().join(", ") || "(none)"),
     ].join("\n");
 
-    log("Showing ClawDrive status");
+    log(t("log.showStatus"));
     getOutputChannel().show(true);
     getOutputChannel().appendLine("");
     getOutputChannel().appendLine(message);
-    await vscode.window.showInformationMessage("ClawDrive status written to the output channel.");
+    await vscode.window.showInformationMessage(t("notify.statusWritten"));
   }
 
   async diagnose(): Promise<void> {
@@ -88,6 +89,8 @@ class ClawDriveRuntime {
   getDashboardSnapshot() {
     const cfg = getConfig();
     return {
+      locale: getCurrentLocale(),
+      connectionState: this.connectionState,
       displayName: cfg.displayName,
       gatewayUrl: `${cfg.gatewayTls ? "wss" : "ws"}://${cfg.gatewayHost}:${cfg.gatewayPort}`,
       connected: this.connectionState === "connected",
@@ -100,7 +103,7 @@ class ClawDriveRuntime {
 
 export function activate(context: vscode.ExtensionContext): void {
   const runtime = new ClawDriveRuntime(context);
-  log("Activating ClawDrive for VS Code");
+  log(t("log.activating"));
 
   context.subscriptions.push(
     getOutputChannel(),
