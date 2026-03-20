@@ -1,51 +1,57 @@
 # ClawDrive for VS Code
 
-ClawDrive is the VS Code agent bridge for OpenClaw.
+ClawDrive 是 OpenClaw 的 VS Code agent bridge。
 
-This repository is a clean-room restart for a new VS Code extension that lets OpenClaw drive IDE-native AI agent workflows through natural language.
+这是一个全新的 clean-room 重写仓库，目标是构建一个 VS Code 扩展，让 OpenClaw 可以通过自然语言驱动 VS Code 内的 IDE-native AI agent 工作流。
 
-## Status
+English version:
+- [README.en.md](README.en.md)
 
-This repository is currently in bootstrap phase.
+## 当前状态
 
-What exists now:
+当前仓库还处于 bootstrap 阶段。
 
-- product and protocol specifications for the rewrite
-- a minimal VS Code extension scaffold
-- a stable naming baseline for the new implementation
+已经具备：
 
-What does not exist yet:
+- 新项目的产品与协议规格文档
+- 最小可编译的 VS Code 扩展骨架
+- 已确定的命名、许可证与开发规则
 
-- the full Gateway runtime
-- the full `vscode.*` command surface
-- provider adapters such as Codex
-- task orchestration and recovery flows
+尚未完成：
 
-## Naming
+- 完整的 Gateway 连接运行时
+- 完整的 `vscode.*` 能力面
+- Codex 等 provider 适配层
+- 统一任务编排、恢复、决策流
 
-- product name: `ClawDrive`
-- extension display name: `ClawDrive for VS Code`
-- repository name: `clawdrive-vscode`
-- package name: `clawdrive-vscode`
-- extension identifier: `wangtuo.clawdrive-vscode`
-- configuration prefix: `clawdrive`
-- command prefix: `clawdrive.`
+## 项目定位
 
-## Product Goal
+这个项目的目标不是单纯做“远程命令调用”。
 
-The primary goal is not just remote command execution.
+核心目标是：
 
-The goal is:
+- OpenClaw 用自然语言表达需求
+- ClawDrive 将意图路由到 VS Code 内部能力或 provider-backed task
+- 用户默认不需要记 raw `vscode.*` 命令、`taskId` 或 provider session
+- 长任务通过统一任务模型执行
+- 进度、等待决策、结果、失败都以人类可读方式反馈
 
-- OpenClaw speaks to the IDE in natural language
-- ClawDrive routes that intent into VS Code-native agent workflows
-- progress and results come back in human-readable form
-- provider choice stays behind a stable task contract
+第一阶段可以先实现 Codex。
+但架构上不能把产品永久绑定到 Codex，后续应能支持 Claude 等其他 provider。
 
-Codex can be the first provider.
-Claude and other providers should be possible later without changing the user-facing workflow model.
+## 命名约定
 
-## Documentation
+- 产品名：`ClawDrive`
+- 扩展显示名：`ClawDrive for VS Code`
+- 仓库名：`clawdrive-vscode`
+- 包名：`clawdrive-vscode`
+- 扩展 ID：`wangtuo.clawdrive-vscode`
+- 配置前缀：`clawdrive`
+- 命令前缀：`clawdrive.`
+
+## 文档
+
+核心文档：
 
 - [docs/01-product-scope.md](docs/01-product-scope.md)
 - [docs/02-node-protocol.md](docs/02-node-protocol.md)
@@ -60,19 +66,25 @@ Claude and other providers should be possible later without changing the user-fa
 - [docs/10-natural-language-calling.zh-CN.md](docs/10-natural-language-calling.zh-CN.md)
 - [docs/11-development-rules.md](docs/11-development-rules.md)
 
-## Local Development
+说明：
+
+- 当前仓库以中文 `README.md` 作为主入口文档
+- `docs` 下大部分规格文档目前仍以英文为主
+- 中文化会逐步补齐，但不会牺牲当前实现推进速度
+
+## 本地开发
 
 ```powershell
 npm install
 npm run compile
 ```
 
-Then open this folder in VS Code and press `F5` to launch the extension development host.
+然后在 VS Code 中打开这个目录，按 `F5` 启动 Extension Development Host。
 
-## Reference Boundary
+## 参考边界
 
-Behavior analysis reference only:
+仅作为行为分析参考：
 
 - `https://github.com/akwang10000/openclaw-vscode.git`
 
-This repository should not copy source code, tests, assets, or wording from that reference repository.
+这个新仓库不应复制旧仓库的源码、测试、资源文件或说明文案。
