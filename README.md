@@ -1,43 +1,46 @@
 # ClawDrive for VS Code
 
-ClawDrive 是 OpenClaw 的 VS Code agent bridge。
+ClawDrive 是 OpenClaw 的 VS Code 侧 agent bridge。
 
-这是一个全新的 clean-room 重写仓库，目标是构建一个 VS Code 扩展，让 OpenClaw 可以通过自然语言驱动 VS Code 内的 IDE-native AI agent 工作流。
+这个仓库是一个全新的 clean-room 重写项目，目标是让 OpenClaw 通过自然语言驱动 VS Code 内的 IDE-native agent 工作流，而不是只暴露一组原始远程命令。
 
 English version:
 - [README.en.md](README.en.md)
 
 ## 当前状态
 
-当前仓库还处于 bootstrap 阶段。
+当前已经完成 Phase 1 的最小可联调薄切片，并已在本地真实跑通：
 
-已经具备：
+`OpenClaw -> Gateway -> ClawDrive -> vscode.workspace.info -> Gateway 返回结果`
 
-- 新项目的产品与协议规格文档
-- 最小可编译的 VS Code 扩展骨架
-- 已确定的命名、许可证与开发规则
+当前已实现：
 
-尚未完成：
+- 最小可运行的 VS Code 扩展运行时
+- Gateway `connect` / `disconnect` 链路
+- 设备身份签名握手与旧身份兼容迁移
+- 最小远程命令面 `vscode.workspace.info`
+- Dashboard / Settings 图形界面
+- 输出日志、状态栏、连接诊断
 
-- 完整的 Gateway 连接运行时
-- 完整的 `vscode.*` 能力面
-- Codex 等 provider 适配层
-- 统一任务编排、恢复、决策流
+当前仍未实现：
 
-## 项目定位
+- 更完整的只读命令集
+- 文件修改类命令与安全基础设施
+- Codex、Claude 等 provider 适配层
+- 统一任务编排、恢复、等待决策与自然语言路由
 
-这个项目的目标不是单纯做“远程命令调用”。
+## 核心目标
+
+这个项目的目标不是“让 OpenClaw 能远程调用几个 VS Code API”。
 
 核心目标是：
 
-- OpenClaw 用自然语言表达需求
-- ClawDrive 将意图路由到 VS Code 内部能力或 provider-backed task
-- 用户默认不需要记 raw `vscode.*` 命令、`taskId` 或 provider session
-- 长任务通过统一任务模型执行
-- 进度、等待决策、结果、失败都以人类可读方式反馈
+- 用户通过自然语言表达 IDE 任务
+- OpenClaw 将请求路由到 VS Code 内的 agent 工作流
+- 进度、等待、结果、失败以人类可读方式返回
+- provider 被收敛在稳定任务契约之后，而不是暴露给最终用户
 
-第一阶段可以先实现 Codex。
-但架构上不能把产品永久绑定到 Codex，后续应能支持 Claude 等其他 provider。
+Phase 1 只证明最小节点接入链路。后续阶段才进入 read-only command set、security foundations、task framework，以及 Codex / Claude provider integration。
 
 ## 命名约定
 
@@ -50,8 +53,6 @@ English version:
 - 命令前缀：`clawdrive.`
 
 ## 文档
-
-核心文档：
 
 - [docs/01-product-scope.md](docs/01-product-scope.md)
 - [docs/02-node-protocol.md](docs/02-node-protocol.md)
@@ -66,11 +67,69 @@ English version:
 - [docs/10-natural-language-calling.zh-CN.md](docs/10-natural-language-calling.zh-CN.md)
 - [docs/11-development-rules.md](docs/11-development-rules.md)
 
-说明：
+## Phase 1 当前能力
 
-- 当前仓库以中文 `README.md` 作为主入口文档
-- `docs` 下大部分规格文档目前仍以英文为主
-- 中文化会逐步补齐，但不会牺牲当前实现推进速度
+本地命令：
+
+- `ClawDrive: Dashboard`
+- `ClawDrive: Settings`
+- `ClawDrive: Connect`
+- `ClawDrive: Disconnect`
+- `ClawDrive: Show Status`
+- `ClawDrive: Diagnose Connection`
+
+当前远程命令面：
+
+- `vscode.workspace.info`
+
+返回结构：
+
+- `name: string | null`
+- `rootPath: string | null`
+- `folders: string[]`
+
+## Phase 1 接入要求
+
+必需配置：
+
+- `clawdrive.gateway.host`
+- `clawdrive.gateway.port`
+- `clawdrive.gateway.token`
+
+推荐的本地默认值：
+
+- `clawdrive.gateway.host = 127.0.0.1`
+- `clawdrive.gateway.port = 18789`
+- `clawdrive.gateway.tls = false`
+- `clawdrive.displayName = ClawDrive`
+
+如果 Gateway 启用了 `gateway.nodes.allowCommands`，至少需要包含：
+
+- `vscode.workspace.info`
+
+## 最小测试路径
+
+1. 启动本地 OpenClaw Gateway。
+2. 在 VS Code 中运行 `ClawDrive: Dashboard`。
+3. 打开 `Settings`，填入 Gateway host / port / token。
+4. 回到 Dashboard，执行 `Connect`。
+5. 如果连接异常，执行 `Diagnose` 并查看 `Open Log`。
+6. 在 OpenClaw 侧发起 `vscode.workspace.info` 调用。
+7. 确认 ClawDrive 日志中出现：
+   - `Connected to Gateway`
+   - `invoke request: vscode.workspace.info`
+   - `invoke result: vscode.workspace.info ok=true`
+
+这条路径已经在本地真实验证通过。
+
+## 已验证结论
+
+当前已确认：
+
+- ClawDrive 可以在不修改 OpenClaw 源码的前提下接入现有 Gateway
+- Dashboard / Settings 足以支撑 Phase 1 接入与排障
+- 设备身份必须与旧链路兼容，否则 Gateway 会返回 `device identity mismatch`
+- 修复身份算法并复用旧 `~/.openclaw-vscode/device.json` 后，连接与调用恢复正常
 
 ## 本地开发
 
@@ -83,8 +142,8 @@ npm run compile
 
 ## 参考边界
 
-仅作为行为分析参考：
+仅用于行为分析参考：
 
 - `https://github.com/akwang10000/openclaw-vscode.git`
 
-这个新仓库不应复制旧仓库的源码、测试、资源文件或说明文案。
+本仓库不应复制参考仓库中的源代码、测试、资源文件或文案内容。

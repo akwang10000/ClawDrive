@@ -27,10 +27,36 @@ The new repository should support this sequence:
    - signed device identity
 5. Transition to `connected` only after the Gateway accepts the node.
 
+Phase 1 implementation note:
+
+- this flow is now implemented and verified against a real local Gateway
+- the first accepted command surface is intentionally limited to `vscode.workspace.info`
+
 Operational note:
 
 - the command inventory advertised at connect time must match the command list the node is actually willing to execute
 - if the Gateway allowlist is too narrow or does not exact-match command names, the node may appear connected while exposing an unexpectedly small or empty command set
+
+## Device Identity Compatibility
+
+The device identity rules are not optional details.
+They are part of whether a node can connect at all.
+
+The current implementation should assume:
+
+- the signing key is Ed25519
+- `device.id` must be derived from the public key, not generated as an unrelated UUID
+- compatibility with an existing local VS Code node identity matters in practice
+
+For the current local environment, the safe rule is:
+
+1. Prefer reusing an existing `~/.openclaw-vscode/device.json` identity when it exists.
+2. Derive `deviceId` from the raw Ed25519 public key fingerprint.
+3. Persist the normalized identity into the current extension storage.
+
+Observed failure mode when this is wrong:
+
+- the Gateway rejects `connect` with `device identity mismatch`
 
 ## Runtime Frames
 

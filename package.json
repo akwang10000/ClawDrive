@@ -6,6 +6,10 @@
   "publisher": "wangtuo",
   "license": "MIT",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akwang10000/ClawDrive.git"
+  },
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -14,14 +18,39 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:clawdrive.showStatus"
+    "onCommand:clawdrive.dashboard",
+    "onCommand:clawdrive.showStatus",
+    "onCommand:clawdrive.connect",
+    "onCommand:clawdrive.disconnect",
+    "onCommand:clawdrive.diagnoseConnection",
+    "onCommand:clawdrive.settings"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
+        "command": "clawdrive.dashboard",
+        "title": "ClawDrive: Dashboard"
+      },
+      {
+        "command": "clawdrive.connect",
+        "title": "ClawDrive: Connect"
+      },
+      {
+        "command": "clawdrive.disconnect",
+        "title": "ClawDrive: Disconnect"
+      },
+      {
         "command": "clawdrive.showStatus",
         "title": "ClawDrive: Show Status"
+      },
+      {
+        "command": "clawdrive.diagnoseConnection",
+        "title": "ClawDrive: Diagnose Connection"
+      },
+      {
+        "command": "clawdrive.settings",
+        "title": "ClawDrive: Settings"
       }
     ],
     "configuration": {
@@ -34,8 +63,18 @@
         },
         "clawdrive.gateway.port": {
           "type": "number",
-          "default": 3100,
+          "default": 18789,
           "description": "Gateway port for ClawDrive."
+        },
+        "clawdrive.gateway.tls": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use TLS when connecting to the Gateway."
+        },
+        "clawdrive.gateway.token": {
+          "type": "string",
+          "default": "",
+          "description": "Gateway token for ClawDrive."
         },
         "clawdrive.displayName": {
           "type": "string",
@@ -52,6 +91,10 @@
   "devDependencies": {
     "@types/node": "^22.15.3",
     "@types/vscode": "^1.96.0",
+    "@types/ws": "^8.5.14",
     "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "ws": "^8.18.2"
   }
 }

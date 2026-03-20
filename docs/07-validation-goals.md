@@ -6,6 +6,20 @@ The rewrite needs explicit success criteria.
 
 Without them, it is too easy to ship a node that can technically execute commands but still fails the actual product goal of letting OpenClaw drive IDE agents naturally inside VS Code.
 
+## Phase 1 Slice Status
+
+Phase 1 is intentionally narrower than the full product target.
+
+The first thin slice is considered complete only when all of these are true:
+
+- the VS Code extension reaches `connected` against a real Gateway
+- the node advertises `vscode.workspace.info`
+- OpenClaw can invoke `vscode.workspace.info` through the Gateway
+- ClawDrive returns a successful structured result
+- the operator can confirm the flow from Dashboard, diagnosis output, and logs
+
+That thin slice has now been validated locally.
+
 ## Product-Level Acceptance
 
 The rewrite should not be considered successful until all of these are true.
@@ -116,6 +130,20 @@ These checks matter even if the user never sees them directly.
 - task storage, event emission, and activity summaries stay consistent across restart and reconnect
 - provider-specific failures are translated into stable task states
 - route decisions can be reasoned about during debugging
+
+## Phase 1 Evidence
+
+The current repository now has direct evidence for the minimum connection path:
+
+- Dashboard-triggered connect succeeds
+- diagnosis reports `connected` and `callable`
+- ClawDrive logs show:
+  - `Connected to Gateway`
+  - `invoke request: vscode.workspace.info`
+  - `invoke result: vscode.workspace.info ok=true`
+
+This is enough to close the transport-side Phase 1 slice.
+It is not enough to claim that the full natural-language product goal is complete.
 
 ## Scope Guard
 
