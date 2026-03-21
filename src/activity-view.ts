@@ -65,6 +65,9 @@ export class ClawDriveActivityProvider implements vscode.TreeDataProvider<TaskTr
     output.appendLine("");
     output.appendLine(taskResultTitle(result.snapshot.title, result.snapshot.state));
     output.appendLine(result.snapshot.summary);
+    if (result.snapshot.errorCode) {
+      output.appendLine(`Error code: ${result.snapshot.errorCode}`);
+    }
     if (result.snapshot.decision) {
       output.appendLine("Decision:");
       for (const option of result.snapshot.decision.options) {

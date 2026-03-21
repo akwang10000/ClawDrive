@@ -20,16 +20,20 @@ The current validated path now includes:
 - a VS Code activity view for recent tasks
 - dashboard, settings, diagnosis, status bar, and output logging
 - optional auto-connect on VS Code startup
+- structured diagnosis for `connected`, `callable`, `provider ready`, and latest-task failure context
+- automated regression coverage for routing, provider argument shaping, task recovery, and timeout handling
 
 Validated end-to-end flows:
 
 - `OpenClaw -> Gateway -> ClawDrive -> vscode.workspace.info -> Gateway result`
 - `OpenClaw -> vscode.agent.task.start -> Codex CLI provider -> task execution/result`
+- `OpenClaw -> vscode.agent.route -> direct inspect/analyze/plan/continue routing`
 
 ## What Exists Now
 
 Implemented remote commands:
 
+- `vscode.agent.route`
 - `vscode.workspace.info`
 - `vscode.file.read`
 - `vscode.dir.list`
@@ -46,6 +50,15 @@ Implemented long-task modes:
 
 - `analyze`
 - `plan`
+
+Current natural-language behavior:
+
+- direct inspect requests can resolve synchronously through read-only commands
+- broader explanation requests route to `analyze`
+- option-seeking requests route to `plan`
+- `continue` / `use the recommended option` resolve against recent tasks
+- status and failure questions resolve through a synchronous diagnosis summary
+- write intent is redirected back to planning
 
 Current task states:
 
@@ -95,6 +108,23 @@ The dashboard is intentionally reduced to the essential actions:
 - run diagnosis
 
 Advanced actions such as disconnect or detailed status remain available from the command palette.
+
+If the Gateway uses `gateway.nodes.allowCommands`, you must also allow newly added commands after upgrades.
+
+At the current milestone, the minimum recommended allowlist includes:
+
+- `vscode.agent.route`
+- `vscode.workspace.info`
+- `vscode.file.read`
+- `vscode.dir.list`
+- `vscode.editor.active`
+- `vscode.diagnostics.get`
+- `vscode.agent.task.start`
+- `vscode.agent.task.status`
+- `vscode.agent.task.list`
+- `vscode.agent.task.respond`
+- `vscode.agent.task.cancel`
+- `vscode.agent.task.result`
 
 ## Compatibility Notes
 

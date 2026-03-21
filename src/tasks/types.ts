@@ -47,6 +47,7 @@ export interface TaskSnapshot {
   lastOutput: string | null;
   decision: TaskDecisionRequest | null;
   error: string | null;
+  errorCode: string | null;
   providerKind: string;
   providerSessionId: string | null;
   resultSummary: string | null;
@@ -65,6 +66,14 @@ export interface TaskEventRecord {
 export interface TaskResultPayload {
   snapshot: TaskSnapshot;
   events: TaskEventRecord[];
+}
+
+export interface TaskContinuationCandidate {
+  taskId: string;
+  title: string;
+  state: Extract<TaskState, "waiting_decision" | "interrupted" | "running" | "queued">;
+  updatedAt: string;
+  summary: string;
 }
 
 export interface TaskStartParams {

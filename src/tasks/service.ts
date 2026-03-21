@@ -1,5 +1,4 @@
 import { randomUUID } from "crypto";
-import * as path from "path";
 import * as vscode from "vscode";
 import { getConfig } from "../config";
 import { commandFailure } from "../guards/errors";
@@ -24,6 +23,7 @@ import {
 } from "./text";
 import type {
   ProviderStatusInfo,
+  TaskContinuationCandidate,
   TaskEventRecord,
   TaskListParams,
   TaskMode,
@@ -32,10 +32,19 @@ import type {
   TaskResultPayload,
   TaskRunResult,
   TaskSnapshot,
+  TaskState,
   TaskStartParams,
 } from "./types";
 
 type RunTrigger = { kind: "start" } | { kind: "resume"; response: TaskResponseInput };
+
+interface TaskServiceOptions {
+  getConfig?: typeof getConfig;
+  createProvider?: (config: ReturnType<typeof getConfig>) => TaskProvider;
+  createStorage?: (rootPath: string, historyLimit: number) => TaskStorage;
+  getWorkspacePath?: () => string | null;
+  now?: () => string;
+}
 
 interface ActiveRun {
   taskId: string;
@@ -47,6 +56,7 @@ interface ActiveRun {
 export class TaskService implements vscode.Disposable {
   private storage: TaskStorage;
   private provider: TaskProvider;
+  private readonly options: Required<TaskServiceOptions>;
   private readonly emitter = new vscode.EventEmitter<void>();
   private readonly lifecycleEmitter = new vscode.EventEmitter<TaskEventRecord>();
   private readonly tasks = new Map<string, TaskSnapshot>();
@@ -58,8 +68,18 @@ export class TaskService implements vscode.Disposable {
     detail: "Provider disabled.",
   });
 
-  constructor(private readonly context: vscode.ExtensionContext) {
-    const cfg = getConfig();
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    options?: TaskServiceOptions
+  ) {
+    this.options = {
+      getConfig: options?.getConfig ?? getConfig,
+      createProvider: options?.createProvider ?? ((config) => new CodexCliProvider(config)),
+      createStorage: options?.createStorage ?? ((rootPath, historyLimit) => new TaskStorage(rootPath, historyLimit)),
+      getWorkspacePath: options?.getWorkspacePath ?? (() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null),
+      now: options?.now ?? (() => new Date().toISOString()),
+    };
+    const cfg = this.options.getConfig();
     this.storage = this.createStorage(cfg.tasksHistoryLimit);
     this.provider = this.createProvider();
   }
@@ -75,14 +95,16 @@ export class TaskService implements vscode.Disposable {
   async initialize(): Promise<void> {
     await this.storage.initialize();
     for (const snapshot of await this.storage.listSnapshots()) {
-      if (snapshot.state === "running") {
-        snapshot.state = "interrupted";
-        snapshot.summary = taskInterruptedSummary();
-        snapshot.updatedAt = new Date().toISOString();
-        await this.storage.saveSnapshot(snapshot);
-        await this.appendEvent(snapshot, "interrupted", snapshot.summary);
+      const normalized = this.normalizeLoadedSnapshot(snapshot);
+      if (normalized.state === "running") {
+        normalized.state = "interrupted";
+        normalized.summary = taskInterruptedSummary();
+        normalized.updatedAt = this.options.now();
+        normalized.errorCode = null;
+        await this.storage.saveSnapshot(normalized);
+        await this.appendEvent(normalized, "interrupted", normalized.summary);
       }
-      this.tasks.set(snapshot.taskId, snapshot);
+      this.tasks.set(normalized.taskId, normalized);
     }
     await this.refreshProviderStatus();
     this.emitter.fire();
@@ -95,7 +117,7 @@ export class TaskService implements vscode.Disposable {
   }
 
   async refreshProviderStatus(): Promise<ProviderStatusInfo> {
-    this.storage = this.createStorage(getConfig().tasksHistoryLimit);
+    this.storage = this.createStorage(this.options.getConfig().tasksHistoryLimit);
     await this.storage.initialize();
     this.provider = this.createProvider();
     this.providerStatus = this.mapProbeToStatus(await this.provider.probe());
@@ -142,7 +164,7 @@ export class TaskService implements vscode.Disposable {
       throw commandFailure("TASK_MODE_UNSUPPORTED", taskWriteBlockedMessage());
     }
 
-    const now = new Date().toISOString();
+    const now = this.options.now();
     const snapshot: TaskSnapshot = {
       taskId: randomUUID(),
       title: `${params.mode === "plan" ? "Plan" : "Analyze"}: ${this.clip(prompt, 72)}`,
@@ -156,6 +178,7 @@ export class TaskService implements vscode.Disposable {
       lastOutput: null,
       decision: null,
       error: null,
+      errorCode: null,
       providerKind: this.provider.kind,
       providerSessionId: null,
       resultSummary: null,
@@ -188,7 +211,8 @@ export class TaskService implements vscode.Disposable {
     snapshot.state = "queued";
     snapshot.summary = taskQueuedSummary(snapshot.mode);
     snapshot.error = null;
-    snapshot.updatedAt = new Date().toISOString();
+    snapshot.errorCode = null;
+    snapshot.updatedAt = this.options.now();
     this.pendingRuns.set(snapshot.taskId, { kind: "resume", response });
     await this.storage.saveSnapshot(snapshot);
     await this.appendEvent(snapshot, "queued", snapshot.summary);
@@ -209,7 +233,8 @@ export class TaskService implements vscode.Disposable {
     }
     snapshot.state = "cancelled";
     snapshot.summary = taskCancelledSummary();
-    snapshot.updatedAt = new Date().toISOString();
+    snapshot.errorCode = null;
+    snapshot.updatedAt = this.options.now();
     this.pendingRuns.delete(taskId);
     await this.storage.saveSnapshot(snapshot);
     await this.appendEvent(snapshot, "cancelled", snapshot.summary);
@@ -226,7 +251,58 @@ export class TaskService implements vscode.Disposable {
       throw commandFailure("TASK_NOT_FOUND", "No waiting task is available to continue.");
     }
     const optionId = waiting.decision?.recommendedOptionId ?? undefined;
-    return await this.respondToTask({ taskId: waiting.taskId, optionId });
+    return await this.respondToTask(
+      optionId
+        ? { taskId: waiting.taskId, optionId }
+        : { taskId: waiting.taskId, message: taskResumePrompt() }
+    );
+  }
+
+  async resumeLatestInterrupted(): Promise<TaskSnapshot> {
+    const interrupted = this.findLatestTask(["interrupted"]);
+    if (!interrupted) {
+      throw commandFailure("TASK_NOT_FOUND", "No interrupted task is available to continue.");
+    }
+    return await this.respondToTask({
+      taskId: interrupted.taskId,
+      message: taskResumePrompt(),
+    });
+  }
+
+  listContinuationCandidates(): TaskContinuationCandidate[] {
+    const priority: Record<TaskContinuationCandidate["state"], number> = {
+      waiting_decision: 0,
+      interrupted: 1,
+      running: 2,
+      queued: 3,
+    };
+
+    return [...this.tasks.values()]
+      .filter(
+        (task): task is TaskSnapshot & { state: TaskContinuationCandidate["state"] } =>
+          task.state === "waiting_decision" ||
+          task.state === "interrupted" ||
+          task.state === "running" ||
+          task.state === "queued"
+      )
+      .sort((left, right) => {
+        const priorityDiff = priority[left.state] - priority[right.state];
+        if (priorityDiff !== 0) {
+          return priorityDiff;
+        }
+        return right.updatedAt.localeCompare(left.updatedAt);
+      })
+      .map((task) => ({
+        taskId: task.taskId,
+        title: task.title,
+        state: task.state,
+        updatedAt: task.updatedAt,
+        summary: task.summary,
+      }));
+  }
+
+  getLatestTask(states?: TaskState[]): TaskSnapshot | null {
+    return this.findLatestTask(states);
   }
 
   private async pumpQueue(): Promise<void> {
@@ -252,7 +328,7 @@ export class TaskService implements vscode.Disposable {
         this.activeRun.reason = "timeout";
         controller.abort("timeout");
       }
-    }, Math.max(5_000, getConfig().tasksDefaultTimeoutMs));
+    }, Math.max(5_000, this.options.getConfig().tasksDefaultTimeoutMs));
     timeout.unref?.();
 
     this.activeRun = { taskId: next.taskId, controller, timeout, reason: null };
@@ -272,25 +348,26 @@ export class TaskService implements vscode.Disposable {
     snapshot.state = "running";
     snapshot.summary = taskStartedSummary(snapshot.mode);
     snapshot.error = null;
-    snapshot.updatedAt = new Date().toISOString();
+    snapshot.errorCode = null;
+    snapshot.updatedAt = this.options.now();
     await this.storage.saveSnapshot(snapshot);
     await this.appendEvent(snapshot, trigger.kind === "resume" ? "resumed" : "started", snapshot.summary);
     this.tasks.set(snapshot.taskId, snapshot);
     this.emitter.fire();
 
     try {
-      const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+      const workspacePath = this.options.getWorkspacePath();
       const callbacks = {
         onSessionId: (sessionId: string) => {
           snapshot.providerSessionId = sessionId;
-          snapshot.updatedAt = new Date().toISOString();
+          snapshot.updatedAt = this.options.now();
           void this.storage.saveSnapshot(snapshot);
           this.tasks.set(snapshot.taskId, snapshot);
           this.emitter.fire();
         },
         onProgress: (summary: string) => {
           snapshot.summary = summary;
-          snapshot.updatedAt = new Date().toISOString();
+          snapshot.updatedAt = this.options.now();
           void this.storage.saveSnapshot(snapshot);
           this.tasks.set(snapshot.taskId, snapshot);
           void this.appendEvent(snapshot, "progress", summary);
@@ -298,7 +375,7 @@ export class TaskService implements vscode.Disposable {
         },
         onOutput: (output: string) => {
           snapshot.lastOutput = output;
-          snapshot.updatedAt = new Date().toISOString();
+          snapshot.updatedAt = this.options.now();
           void this.storage.saveSnapshot(snapshot);
           this.tasks.set(snapshot.taskId, snapshot);
           void this.appendEvent(snapshot, "output", "Task output updated.", output);
@@ -340,28 +417,37 @@ export class TaskService implements vscode.Disposable {
       if (reason === "cancelled") {
         snapshot.state = "cancelled";
         snapshot.summary = taskCancelledSummary();
-        snapshot.updatedAt = new Date().toISOString();
+        snapshot.errorCode = null;
+        snapshot.updatedAt = this.options.now();
         await this.storage.saveSnapshot(snapshot);
         await this.appendEvent(snapshot, "cancelled", snapshot.summary);
       } else if (reason === "dispose") {
         snapshot.state = "interrupted";
         snapshot.summary = taskInterruptedSummary();
-        snapshot.updatedAt = new Date().toISOString();
+        snapshot.errorCode = null;
+        snapshot.updatedAt = this.options.now();
         await this.storage.saveSnapshot(snapshot);
         await this.appendEvent(snapshot, "interrupted", snapshot.summary);
       } else {
         const message =
           reason === "timeout"
-            ? `Task timed out after ${getConfig().tasksDefaultTimeoutMs}ms.`
+            ? `Task timed out after ${this.options.getConfig().tasksDefaultTimeoutMs}ms.`
             : error instanceof Error
               ? error.message
               : String(error);
+        const code =
+          reason === "timeout"
+            ? "TASK_TIMEOUT"
+            : error instanceof Error && "code" in error && typeof error.code === "string"
+              ? error.code
+              : "TASK_FAILED";
         snapshot.state = "failed";
+        snapshot.errorCode = code;
         snapshot.error = message;
         snapshot.summary = taskFailedSummary(message);
-        snapshot.updatedAt = new Date().toISOString();
+        snapshot.updatedAt = this.options.now();
         await this.storage.saveSnapshot(snapshot);
-        await this.appendEvent(snapshot, "failed", snapshot.summary, message);
+        await this.appendEvent(snapshot, "failed", snapshot.summary, `${code}: ${message}`);
       }
       this.tasks.set(snapshot.taskId, snapshot);
       this.emitter.fire();
@@ -374,7 +460,9 @@ export class TaskService implements vscode.Disposable {
     }
     snapshot.lastOutput = result.output ?? snapshot.lastOutput;
     snapshot.resultSummary = result.summary;
-    snapshot.updatedAt = new Date().toISOString();
+    snapshot.error = null;
+    snapshot.errorCode = null;
+    snapshot.updatedAt = this.options.now();
 
     if (result.decision) {
       snapshot.state = "waiting_decision";
@@ -417,6 +505,15 @@ export class TaskService implements vscode.Disposable {
     }
   }
 
+  private findLatestTask(states?: TaskState[]): TaskSnapshot | null {
+    const allowed = states ? new Set(states) : null;
+    return (
+      [...this.tasks.values()]
+        .filter((task) => (allowed ? allowed.has(task.state) : true))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null
+    );
+  }
+
   private clip(value: string, maxLength: number): string {
     return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
   }
@@ -433,7 +530,7 @@ export class TaskService implements vscode.Disposable {
     const event: TaskEventRecord = {
       id: randomUUID(),
       taskId: snapshot.taskId,
-      at: new Date().toISOString(),
+      at: this.options.now(),
       type,
       state: snapshot.state,
       summary,
@@ -458,10 +555,22 @@ export class TaskService implements vscode.Disposable {
   }
 
   private createProvider(): TaskProvider {
-    return new CodexCliProvider(getConfig());
+    return this.options.createProvider(this.options.getConfig());
   }
 
   private createStorage(historyLimit: number): TaskStorage {
-    return new TaskStorage(this.context.globalStorageUri.fsPath, historyLimit);
+    return this.options.createStorage(this.context.globalStorageUri.fsPath, historyLimit);
+  }
+
+  private normalizeLoadedSnapshot(snapshot: TaskSnapshot): TaskSnapshot {
+    return {
+      ...snapshot,
+      errorCode: snapshot.errorCode ?? null,
+      resultSummary: snapshot.resultSummary ?? null,
+      providerSessionId: snapshot.providerSessionId ?? null,
+      decision: snapshot.decision ?? null,
+      lastOutput: snapshot.lastOutput ?? null,
+      error: snapshot.error ?? null,
+    };
   }
 }

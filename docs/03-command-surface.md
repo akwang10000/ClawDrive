@@ -4,6 +4,13 @@
 
 The current repository exposes these stable remote commands:
 
+### Natural-Language Entry
+
+- `vscode.agent.route`
+
+This is the preferred OpenClaw-facing entrypoint for ordinary prompts.
+It classifies requests and then routes internally to either direct read-only commands or provider-backed task commands.
+
 ### Direct Read-Only Commands
 
 - `vscode.workspace.info`
@@ -58,6 +65,7 @@ These states are persisted and also surfaced through the activity view and task 
 
 The intended split for the current milestone is:
 
+- normal natural-language entry -> `vscode.agent.route`
 - simple inspect and query -> direct read-only commands
 - broad explanation and multi-file understanding -> `analyze`
 - options, tradeoffs, and "do not modify anything" -> `plan`

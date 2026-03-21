@@ -4,12 +4,13 @@ import * as vscode from "vscode";
 import { ClawDriveActivityProvider } from "./activity-view";
 import { getConfig } from "./config";
 import { dispatchCommand, getRegisteredCommands, initializeCommandRegistry } from "./commands/registry";
-import { runConnectionDiagnosis, isCallableWithLocalConfig } from "./diagnostics";
+import { collectOperatorStatus, runConnectionDiagnosis, isCallableWithLocalConfig } from "./diagnostics";
 import { refreshDashboardPanel, showDashboardPanel } from "./dashboard-panel";
 import { GatewayClient, type ConnectionState } from "./gateway-client";
 import { getCurrentLocale, t } from "./i18n";
 import { getOutputChannel, log } from "./logger";
 import { getProviderStatusLabel } from "./provider-status";
+import { AgentRouteService } from "./routing/service";
 import { showSettingsPanel } from "./settings-panel";
 import { ClawDriveStatusBar } from "./status-bar";
 import { TaskService } from "./tasks/service";
@@ -19,6 +20,7 @@ class ClawDriveRuntime {
   private readonly statusBar: ClawDriveStatusBar;
   private readonly taskService: TaskService;
   private readonly activityProvider: ClawDriveActivityProvider;
+  private readonly routeService: AgentRouteService;
   private client: GatewayClient | null = null;
   private connectionState: ConnectionState = "disconnected";
 
@@ -27,7 +29,15 @@ class ClawDriveRuntime {
     this.taskService = new TaskService(context);
     this.activityProvider = new ClawDriveActivityProvider(this.taskService);
     this.statusBar = new ClawDriveStatusBar();
-    initializeCommandRegistry({ taskService: this.taskService });
+    this.routeService = new AgentRouteService({
+      taskService: this.taskService,
+      getConnectionState: () => this.connectionState,
+      getProviderStatus: () => this.taskService.getProviderStatus(),
+    });
+    initializeCommandRegistry({
+      taskService: this.taskService,
+      routeHandler: (params) => this.routeService.route(params),
+    });
     this.statusBar.update(this.connectionState, isCallableWithLocalConfig(), this.providerStatusLabel());
     this.taskService.onDidChange(() => {
       this.statusBar.update(this.connectionState, isCallableWithLocalConfig(), this.providerStatusLabel());
@@ -89,12 +99,16 @@ class ClawDriveRuntime {
 
   async showStatus(): Promise<void> {
     const cfg = getConfig();
+    const latestTask =
+      this.taskService.getLatestTask(["waiting_decision", "running", "queued", "interrupted"]) ??
+      this.taskService.getLatestTask(["failed"]);
+    const status = await collectOperatorStatus(this.connectionState, this.taskService.getProviderStatus(), latestTask);
     const message = [
       t("showStatus.displayName", cfg.displayName),
-      t("showStatus.gateway", `${cfg.gatewayTls ? "wss" : "ws"}://${cfg.gatewayHost}:${cfg.gatewayPort}`),
-      t("showStatus.connected", this.connectionState === "connected" ? t("status.yes") : t("status.no")),
-      t("showStatus.callable", isCallableWithLocalConfig() ? t("status.ready") : t("status.blocked")),
-      t("showStatus.provider", this.providerStatusLabel()),
+      t("showStatus.gateway", status.gatewayUrl),
+      t("showStatus.connected", status.connected ? t("status.yes") : t("status.no")),
+      t("showStatus.callable", status.callable ? t("status.ready") : t("status.blocked")),
+      t("showStatus.provider", status.providerStatus.label),
       t("showStatus.commands", getRegisteredCommands().join(", ") || "(none)"),
     ].join("\n");
 
@@ -107,7 +121,10 @@ class ClawDriveRuntime {
 
   async diagnose(): Promise<void> {
     await this.taskService.refreshProviderStatus();
-    await runConnectionDiagnosis(this.connectionState, this.taskService.getProviderStatus());
+    const latestTask =
+      this.taskService.getLatestTask(["waiting_decision", "running", "queued", "interrupted"]) ??
+      this.taskService.getLatestTask(["failed"]);
+    await runConnectionDiagnosis(this.connectionState, this.taskService.getProviderStatus(), latestTask);
   }
 
   openLog(): void {

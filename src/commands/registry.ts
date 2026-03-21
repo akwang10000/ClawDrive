@@ -5,6 +5,7 @@ import { fileRead } from "./file";
 import { assertCommandAllowed } from "../guards/policy";
 import { isCommandFailure, mapUnknownCommandError } from "../guards/errors";
 import { runWithCommandTimeout } from "../guards/timeout";
+import type { AgentRouteRequest, AgentRouteResponse } from "../routing/types";
 import type { TaskService } from "../tasks/service";
 import { workspaceInfo } from "./workspace";
 
@@ -21,6 +22,7 @@ interface CommandDefinition {
 }
 
 let taskService: TaskService | null = null;
+let routeHandler: ((params: AgentRouteRequest) => Promise<AgentRouteResponse>) | null = null;
 
 const definitions: CommandDefinition[] = [
   {
@@ -54,6 +56,13 @@ const definitions: CommandDefinition[] = [
   {
     command: "vscode.diagnostics.get",
     handler: diagnosticsGet,
+    pathAccess: "optional",
+    mutating: false,
+    defaultTimeoutMs: 15_000,
+  },
+  {
+    command: "vscode.agent.route",
+    handler: async (params) => requireRouteHandler()(parseRouteParams(params)),
     pathAccess: "optional",
     mutating: false,
     defaultTimeoutMs: 15_000,
@@ -104,8 +113,12 @@ const definitions: CommandDefinition[] = [
 
 const handlers = new Map<string, CommandDefinition>(definitions.map((definition) => [definition.command, definition]));
 
-export function initializeCommandRegistry(services: { taskService: TaskService }): void {
+export function initializeCommandRegistry(services: {
+  taskService: TaskService;
+  routeHandler: (params: AgentRouteRequest) => Promise<AgentRouteResponse>;
+}): void {
   taskService = services.taskService;
+  routeHandler = services.routeHandler;
 }
 
 export function getRegisteredCommands(): string[] {
@@ -159,6 +172,13 @@ function requireTaskService(): TaskService {
   return taskService;
 }
 
+function requireRouteHandler(): (params: AgentRouteRequest) => Promise<AgentRouteResponse> {
+  if (!routeHandler) {
+    throw mapUnknownCommandError(new Error("Route handler is not initialized."));
+  }
+  return routeHandler;
+}
+
 function parseTaskStartParams(params: unknown): { prompt: string; mode: "analyze" | "plan"; paths?: string[] } {
   if (!params || typeof params !== "object") {
     throw mapUnknownCommandError(new Error("Expected an object with prompt and mode."));
@@ -174,6 +194,19 @@ function parseTaskStartParams(params: unknown): { prompt: string; mode: "analyze
     throw mapUnknownCommandError(new Error("mode must be analyze or plan."));
   }
   return { prompt, mode, paths: rawPaths };
+}
+
+function parseRouteParams(params: unknown): AgentRouteRequest {
+  if (!params || typeof params !== "object") {
+    throw mapUnknownCommandError(new Error("Expected an object with prompt and optional paths."));
+  }
+  const value = params as Record<string, unknown>;
+  const prompt = typeof value.prompt === "string" ? value.prompt.trim() : "";
+  const paths = Array.isArray(value.paths) ? value.paths.filter((item): item is string => typeof item === "string") : undefined;
+  if (!prompt) {
+    throw mapUnknownCommandError(new Error("prompt must be a non-empty string."));
+  }
+  return { prompt, paths };
 }
 
 function parseTaskLookupParams(params: unknown): { taskId: string } {

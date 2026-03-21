@@ -2,7 +2,7 @@
   "name": "clawdrive-vscode",
   "displayName": "ClawDrive for VS Code",
   "description": "Natural-language IDE agent bridge for OpenClaw.",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "publisher": "wangtuo",
   "license": "MIT",
   "private": true,
@@ -175,7 +175,9 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -w -p ./"
+    "watch": "tsc -w -p ./",
+    "test:compile": "tsc -p tsconfig.test.json",
+    "test": "npm run test:compile && node --require ./test/setup-vscode-stub.cjs --test out-test/test/**/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

@@ -24,6 +24,7 @@ Validated:
 
 Validated:
 
+- OpenClaw can invoke `vscode.agent.route`
 - OpenClaw can invoke `vscode.agent.task.start`
 - ClawDrive can queue and run provider-backed tasks
 - Codex CLI can be discovered and launched from the VS Code node
@@ -88,6 +89,7 @@ User goal:
 
 Expected result:
 
+- the user can enter through one natural-language routing command
 - the system performs multi-file inspection as needed
 - the answer returns as a readable explanation
 - no write path is entered
@@ -126,6 +128,7 @@ Expected result:
 - the user gets a short explanation
 - timeout, cancellation, interruption, and execution failure stay distinct
 - the system can either resume, retry, or explain why not
+- provider path problems and CLI argument incompatibility are reported as stable failure categories, not only raw stderr text
 
 ## Still Out Of Scope
 
@@ -144,6 +147,14 @@ These checks matter even if the user never sees them directly:
 - task storage, event emission, and activity summaries stay consistent across restart and reconnect
 - provider-specific failures are translated into stable task states
 - route decisions can be reasoned about during debugging
+
+The current hardening milestone should also be backed by automated checks for:
+
+- task state transition coverage for `queued -> running -> waiting_decision -> completed/failed/cancelled/interrupted`
+- restart recovery of `waiting_decision` and `running`
+- continuation precedence and ambiguity handling
+- Codex CLI path validation and argument compatibility shaping
+- diagnosis summary generation for disconnected, not-callable, provider-not-ready, and latest-failure cases
 
 ## Scope Guard
 

@@ -25,11 +25,13 @@ English version:
 
 - `OpenClaw -> Gateway -> ClawDrive -> vscode.workspace.info -> Gateway result`
 - `OpenClaw -> vscode.agent.task.start -> Codex CLI provider -> task execution/result`
+- `OpenClaw -> vscode.agent.route -> direct inspect/analyze/plan/continue routing`
 
 ## 当前已实现
 
 远程命令面：
 
+- `vscode.agent.route`
 - `vscode.workspace.info`
 - `vscode.file.read`
 - `vscode.dir.list`
@@ -46,6 +48,14 @@ English version:
 
 - `analyze`
 - `plan`
+
+当前自然语言路由行为：
+
+- 简单 inspect 请求会直接落到只读命令
+- 宽范围解释类请求会落到 `analyze`
+- 要方案、要权衡、明确“先别改”的请求会落到 `plan`
+- `继续` / `用推荐方案` 会优先命中最近任务
+- 写入意图当前仍会被挡回 planning-first
 
 当前任务状态：
 
@@ -95,6 +105,23 @@ English version:
 - 运行诊断
 
 断开连接、详细状态等高级操作仍然可以从命令面板进入。
+
+如果 Gateway 启用了 `gateway.nodes.allowCommands`，升级后还需要同步放行新增命令。
+
+当前阶段建议至少允许这些命令：
+
+- `vscode.agent.route`
+- `vscode.workspace.info`
+- `vscode.file.read`
+- `vscode.dir.list`
+- `vscode.editor.active`
+- `vscode.diagnostics.get`
+- `vscode.agent.task.start`
+- `vscode.agent.task.status`
+- `vscode.agent.task.list`
+- `vscode.agent.task.respond`
+- `vscode.agent.task.cancel`
+- `vscode.agent.task.result`
 
 ## 兼容性说明
 

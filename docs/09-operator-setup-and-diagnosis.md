@@ -67,6 +67,30 @@ These fields are currently exposed through the VS Code settings UI and the `Claw
 5. Save settings. The extension connects immediately.
 6. Open `ClawDrive: Dashboard` only if you need to verify connection or run diagnosis.
 
+If the Gateway uses `gateway.nodes.allowCommands`, keep the allowlist aligned with the extension's advertised command surface.
+
+For the current milestone, operators should explicitly allow:
+
+- `vscode.agent.route`
+- `vscode.workspace.info`
+- `vscode.file.read`
+- `vscode.dir.list`
+- `vscode.editor.active`
+- `vscode.diagnostics.get`
+- `vscode.agent.task.start`
+- `vscode.agent.task.status`
+- `vscode.agent.task.list`
+- `vscode.agent.task.respond`
+- `vscode.agent.task.cancel`
+- `vscode.agent.task.result`
+
+Otherwise the common failure mode is:
+
+- connected
+- provider ready
+- advertised commands visible
+- callable still blocked by the Gateway allowlist
+
 ## Common Failure Matrix
 
 ### Gateway Unreachable
@@ -159,6 +183,22 @@ The operator experience should support these questions directly:
 
 The system should answer them with short guidance first and deeper technical detail second.
 
+The current hardening milestone also makes diagnosis reusable across surfaces:
+
+- `vscode.agent.route` can answer status and failure questions synchronously
+- `ClawDrive: Diagnose Connection` uses the same structured status snapshot
+- `ClawDrive: Show Status` now reflects the same connection and provider state labels
+- task failures can carry a stable error code plus human-readable summary
+
+Current diagnosis summary fields are:
+
+- `connected`
+- `callable`
+- `provider ready`
+- latest task state
+- latest failure summary
+- actionable next hint
+
 ## Verified Current Flow
 
 The currently verified operator flow is:
@@ -169,3 +209,13 @@ The currently verified operator flow is:
 4. Trigger a direct read command such as `vscode.workspace.info`.
 5. Trigger a long task through `vscode.agent.task.start`.
 6. Confirm task progress or result from OpenClaw, the activity view, or the output log.
+
+## Hardening Notes
+
+Recent stability work specifically covers:
+
+- `running` tasks restore as `interrupted` after restart
+- `waiting_decision` tasks remain resumable after restart
+- timeout, cancellation, and provider execution failure stay distinct
+- provider CLI incompatibility is translated into stable task failure codes
+- OpenClaw diagnosis requests can explain provider path, compatibility, and allowlist problems without scraping raw logs
