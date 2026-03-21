@@ -5,7 +5,14 @@ export interface ClawDriveConfig {
   gatewayPort: number;
   gatewayTls: boolean;
   gatewayToken: string;
+  autoConnect: boolean;
   displayName: string;
+  providerEnabled: boolean;
+  providerKind: "codex";
+  providerCodexPath: string;
+  providerCodexModel: string;
+  tasksDefaultTimeoutMs: number;
+  tasksHistoryLimit: number;
 }
 
 export function getConfig(): ClawDriveConfig {
@@ -15,6 +22,13 @@ export function getConfig(): ClawDriveConfig {
     gatewayPort: cfg.get<number>("gateway.port", 18789),
     gatewayTls: cfg.get<boolean>("gateway.tls", false),
     gatewayToken: cfg.get<string>("gateway.token", ""),
+    autoConnect: cfg.get<boolean>("autoConnect", true),
     displayName: cfg.get<string>("displayName", "ClawDrive"),
+    providerEnabled: cfg.get<boolean>("provider.enabled", false),
+    providerKind: "codex",
+    providerCodexPath: cfg.get<string>("provider.codex.path", "codex"),
+    providerCodexModel: cfg.get<string>("provider.codex.model", ""),
+    tasksDefaultTimeoutMs: Math.max(5_000, cfg.get<number>("tasks.defaultTimeoutMs", 300_000)),
+    tasksHistoryLimit: Math.max(1, cfg.get<number>("tasks.historyLimit", 50)),
   };
 }

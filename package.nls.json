@@ -10,5 +10,6 @@
   "package.config.gateway.port": "Gateway port for ClawDrive.",
   "package.config.gateway.tls": "Use TLS when connecting to the Gateway.",
   "package.config.gateway.token": "Gateway token for ClawDrive.",
+  "package.config.autoConnect": "Automatically connect to the Gateway on startup.",
   "package.config.displayName": "Display name advertised by the extension."
 }

@@ -1,14 +1,15 @@
 {
-  "package.command.dashboard": "ClawDrive：控制台",
-  "package.command.connect": "ClawDrive：连接",
-  "package.command.disconnect": "ClawDrive：断开连接",
-  "package.command.showStatus": "ClawDrive：显示状态",
-  "package.command.diagnose": "ClawDrive：连接诊断",
-  "package.command.settings": "ClawDrive：设置",
+  "package.command.dashboard": "ClawDrive\uff1a\u63a7\u5236\u53f0",
+  "package.command.connect": "ClawDrive\uff1a\u8fde\u63a5",
+  "package.command.disconnect": "ClawDrive\uff1a\u65ad\u5f00\u8fde\u63a5",
+  "package.command.showStatus": "ClawDrive\uff1a\u663e\u793a\u72b6\u6001",
+  "package.command.diagnose": "ClawDrive\uff1a\u8fde\u63a5\u8bca\u65ad",
+  "package.command.settings": "ClawDrive\uff1a\u8bbe\u7f6e",
   "package.config.title": "ClawDrive",
-  "package.config.gateway.host": "ClawDrive 的 Gateway host。",
-  "package.config.gateway.port": "ClawDrive 的 Gateway 端口。",
-  "package.config.gateway.tls": "连接 Gateway 时是否使用 TLS。",
-  "package.config.gateway.token": "ClawDrive 使用的 Gateway token。",
-  "package.config.displayName": "向 Gateway 广告的节点显示名称。"
+  "package.config.gateway.host": "ClawDrive \u7684 Gateway host\u3002",
+  "package.config.gateway.port": "ClawDrive \u7684 Gateway \u7aef\u53e3\u3002",
+  "package.config.gateway.tls": "\u8fde\u63a5 Gateway \u65f6\u662f\u5426\u4f7f\u7528 TLS\u3002",
+  "package.config.gateway.token": "ClawDrive \u4f7f\u7528\u7684 Gateway token\u3002",
+  "package.config.autoConnect": "\u542f\u52a8 VS Code \u540e\u81ea\u52a8\u8fde\u63a5 Gateway\u3002",
+  "package.config.displayName": "\u5411 Gateway \u5e7f\u544a\u7684\u8282\u70b9\u663e\u793a\u540d\u79f0\u3002"
 }

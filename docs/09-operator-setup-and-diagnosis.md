@@ -7,18 +7,41 @@ This product fails in practice if operators cannot tell:
 - whether the node is connected
 - whether commands are callable
 - whether the selected provider is actually usable
+- whether a task is queued, running, waiting, or failed
 
 Setup and diagnosis are part of the core product surface, not optional tooling.
 
 ## State Layers
 
-The rewrite should distinguish at least these states:
+The current rewrite distinguishes these states:
 
 - `connected`: the VS Code extension has an accepted Gateway session
-- `callable`: the node is advertising a usable command surface and the Gateway allowlist is not suppressing it
-- `provider ready`: the selected provider is installed, enabled, authenticated, and locally runnable
+- `callable`: the node is advertising a usable direct command surface
+- `provider ready`: the selected provider is installed, enabled, and locally runnable
+- task state: queued, running, waiting, completed, failed, cancelled, or interrupted
 
 These states should not be collapsed into one generic "connected" label.
+
+## Current Operator Surfaces
+
+The current repository includes:
+
+- `ClawDrive: Dashboard`
+- `ClawDrive: Settings`
+- `ClawDrive: Connect`
+- `ClawDrive: Disconnect`
+- `ClawDrive: Show Status`
+- `ClawDrive: Diagnose Connection`
+- `ClawDrive Activity` view
+- `ClawDrive` output log
+
+The dashboard is intentionally simplified to the essential actions:
+
+- connect or reconnect
+- open settings
+- run diagnosis
+
+Advanced actions remain in the command palette.
 
 ## First-Run Setup Goals
 
@@ -26,25 +49,25 @@ The first-run path should make these items explicit:
 
 - Gateway host and port
 - token or other required auth input
+- Gateway TLS on or off
+- whether startup should auto-connect
 - display name and node identity
-- safe defaults for mutation policy
 - provider enablement
 - provider binary path or discovery
-- model or provider-specific runtime selection when applicable
-
-For the current Phase 1 slice, the operator-facing setup is intentionally smaller:
-
-- Gateway host
-- Gateway port
-- Gateway TLS on/off
-- Gateway token
-- display name
+- model selection when applicable
 
 These fields are currently exposed through the VS Code settings UI and the `ClawDrive: Settings` panel.
 
-## Common Failure Matrix
+## Current Recommended Setup Flow
 
-The rewrite should document and diagnose these common failures:
+1. Open `ClawDrive: Settings`.
+2. Fill in Gateway host, port, token, and TLS choice.
+3. Leave auto-connect enabled unless you explicitly want manual connection.
+4. Configure provider settings if you want task commands to work.
+5. Save settings. The extension connects immediately.
+6. Open `ClawDrive: Dashboard` only if you need to verify connection or run diagnosis.
+
+## Common Failure Matrix
 
 ### Gateway Unreachable
 
@@ -90,7 +113,7 @@ Recommended action:
 Symptoms:
 
 - node appears connected
-- remote side cannot call expected commands
+- remote side cannot call expected read-only commands
 
 Recommended action:
 
@@ -109,8 +132,21 @@ Recommended action:
 
 - verify the provider is enabled
 - verify the provider binary or executable path
-- verify login or auth state if required
+- verify the CLI can be launched locally
 - verify the selected model or runtime is valid
+
+### Provider Runtime Friction
+
+Symptoms:
+
+- tasks start but fail during execution
+- errors mention missing executable, incompatible CLI arguments, or blocked shell behavior
+
+Recommended action:
+
+- verify the installed Codex CLI version
+- verify executable discovery and argument compatibility
+- verify read-only analysis is not assuming unavailable tools such as `rg`
 
 ## Diagnosis Rules
 
@@ -123,55 +159,13 @@ The operator experience should support these questions directly:
 
 The system should answer them with short guidance first and deeper technical detail second.
 
-The current Phase 1 diagnosis implementation already covers:
-
-- Gateway reachability
-- token presence
-- current session state
-- advertised command surface
-- local `allowCommands` risk for `vscode.workspace.info`
-
-## Local Versus Remote Diagnosis
-
-The rewrite should preserve separate diagnosis paths for:
-
-- local Gateway and local provider execution
-- remote Gateway with local provider execution
-
-The UI should make clear whether a failure is likely:
-
-- transport-side
-- allowlist-side
-- provider-side
-- task-state-side
-
-## Minimum Operator Surfaces
-
-The first usable release should include:
-
-- connection status
-- command-surface status
-- provider readiness status
-- a recent activity view
-- a short diagnosis surface for common misconfiguration cases
-
-The current Phase 1 operator surfaces are:
-
-- `ClawDrive: Dashboard`
-- `ClawDrive: Settings`
-- `ClawDrive: Connect`
-- `ClawDrive: Disconnect`
-- `ClawDrive: Show Status`
-- `ClawDrive: Diagnose Connection`
-- `ClawDrive` output log
-
-## Phase 1 Verified Flow
+## Verified Current Flow
 
 The currently verified operator flow is:
 
-1. Open `ClawDrive: Dashboard`.
-2. Open `Settings` and save Gateway configuration.
-3. Press `Connect`.
-4. If needed, run `Diagnose` and inspect the output log.
-5. Trigger `vscode.workspace.info` from OpenClaw.
-6. Confirm the log shows a successful invoke request/result pair.
+1. Save Gateway and provider settings.
+2. Let the extension auto-connect, or trigger connect manually.
+3. Confirm `connected`, `callable`, and `provider ready`.
+4. Trigger a direct read command such as `vscode.workspace.info`.
+5. Trigger a long task through `vscode.agent.task.start`.
+6. Confirm task progress or result from OpenClaw, the activity view, or the output log.

@@ -8,6 +8,8 @@ import type { ConnectionState } from "./gateway-client";
 import { t } from "./i18n";
 import { getOutputChannel } from "./logger";
 import { getRegisteredCommands } from "./commands/registry";
+import { getProviderDiagnosisMessage } from "./provider-status";
+import type { ProviderStatusInfo } from "./tasks/types";
 
 interface LocalGatewayConfigSnapshot {
   path: string;
@@ -126,7 +128,7 @@ export function isCallableWithLocalConfig(): boolean {
   return commands.every((command) => localConfig.allowCommands?.includes(command));
 }
 
-export async function runConnectionDiagnosis(state: ConnectionState): Promise<void> {
+export async function runConnectionDiagnosis(state: ConnectionState, providerStatus: ProviderStatusInfo): Promise<void> {
   const cfg = getConfig();
   const findings: DiagnosisFinding[] = [];
   const commands = getRegisteredCommands();
@@ -223,9 +225,11 @@ export async function runConnectionDiagnosis(state: ConnectionState): Promise<vo
     detail: callable ? undefined : t("diagnosis.callableStateDetail"),
   });
 
+  const providerDiagnosis = getProviderDiagnosisMessage(providerStatus);
   findings.push({
     level: "info",
-    message: t("diagnosis.provider"),
+    message: providerDiagnosis.message,
+    detail: providerDiagnosis.detail,
   });
 
   const output = getOutputChannel();

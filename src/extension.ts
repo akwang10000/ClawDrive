@@ -1,30 +1,55 @@
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { ClawDriveActivityProvider } from "./activity-view";
 import { getConfig } from "./config";
-import { dispatchCommand, getRegisteredCommands } from "./commands/registry";
+import { dispatchCommand, getRegisteredCommands, initializeCommandRegistry } from "./commands/registry";
 import { runConnectionDiagnosis, isCallableWithLocalConfig } from "./diagnostics";
-import { showDashboardPanel } from "./dashboard-panel";
+import { refreshDashboardPanel, showDashboardPanel } from "./dashboard-panel";
 import { GatewayClient, type ConnectionState } from "./gateway-client";
 import { getCurrentLocale, t } from "./i18n";
 import { getOutputChannel, log } from "./logger";
+import { getProviderStatusLabel } from "./provider-status";
 import { showSettingsPanel } from "./settings-panel";
 import { ClawDriveStatusBar } from "./status-bar";
+import { TaskService } from "./tasks/service";
 
 class ClawDriveRuntime {
   private readonly context: vscode.ExtensionContext;
   private readonly statusBar: ClawDriveStatusBar;
+  private readonly taskService: TaskService;
+  private readonly activityProvider: ClawDriveActivityProvider;
   private client: GatewayClient | null = null;
   private connectionState: ConnectionState = "disconnected";
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
+    this.taskService = new TaskService(context);
+    this.activityProvider = new ClawDriveActivityProvider(this.taskService);
     this.statusBar = new ClawDriveStatusBar();
-    this.statusBar.update(this.connectionState, isCallableWithLocalConfig());
+    initializeCommandRegistry({ taskService: this.taskService });
+    this.statusBar.update(this.connectionState, isCallableWithLocalConfig(), this.providerStatusLabel());
+    this.taskService.onDidChange(() => {
+      this.statusBar.update(this.connectionState, isCallableWithLocalConfig(), this.providerStatusLabel());
+      this.activityProvider.refresh();
+      refreshDashboardPanel();
+    });
+    this.taskService.onDidEmitLifecycle((event) => {
+      this.client?.emitTaskLifecycle(event);
+    });
+  }
+
+  async initialize(): Promise<void> {
+    await this.taskService.initialize();
+    if (getConfig().autoConnect) {
+      this.connect();
+    }
   }
 
   dispose(): void {
     this.client?.stop();
+    this.taskService.dispose();
+    this.activityProvider.dispose();
     this.statusBar.dispose();
   }
 
@@ -45,7 +70,8 @@ class ClawDriveRuntime {
       onInvoke: dispatchCommand,
       onStateChange: (state) => {
         this.connectionState = state;
-        this.statusBar.update(state, isCallableWithLocalConfig());
+        this.statusBar.update(state, isCallableWithLocalConfig(), this.providerStatusLabel());
+        refreshDashboardPanel();
       },
     });
     log(t("log.startClient", cfg.gatewayHost, cfg.gatewayPort));
@@ -56,7 +82,8 @@ class ClawDriveRuntime {
     this.client?.stop();
     this.client = null;
     this.connectionState = "disconnected";
-    this.statusBar.update(this.connectionState, isCallableWithLocalConfig());
+    this.statusBar.update(this.connectionState, isCallableWithLocalConfig(), this.providerStatusLabel());
+    refreshDashboardPanel();
     log(t("log.stopClient"));
   }
 
@@ -67,7 +94,7 @@ class ClawDriveRuntime {
       t("showStatus.gateway", `${cfg.gatewayTls ? "wss" : "ws"}://${cfg.gatewayHost}:${cfg.gatewayPort}`),
       t("showStatus.connected", this.connectionState === "connected" ? t("status.yes") : t("status.no")),
       t("showStatus.callable", isCallableWithLocalConfig() ? t("status.ready") : t("status.blocked")),
-      t("showStatus.provider", t("status.notReady")),
+      t("showStatus.provider", this.providerStatusLabel()),
       t("showStatus.commands", getRegisteredCommands().join(", ") || "(none)"),
     ].join("\n");
 
@@ -79,11 +106,38 @@ class ClawDriveRuntime {
   }
 
   async diagnose(): Promise<void> {
-    await runConnectionDiagnosis(this.connectionState);
+    await this.taskService.refreshProviderStatus();
+    await runConnectionDiagnosis(this.connectionState, this.taskService.getProviderStatus());
   }
 
   openLog(): void {
     getOutputChannel().show(true);
+  }
+
+  getActivityProvider(): ClawDriveActivityProvider {
+    return this.activityProvider;
+  }
+
+  getConnectionState(): ConnectionState {
+    return this.connectionState;
+  }
+
+  async refreshProviderStatus(): Promise<void> {
+    await this.taskService.refreshProviderStatus();
+    this.statusBar.update(this.connectionState, isCallableWithLocalConfig(), this.providerStatusLabel());
+    refreshDashboardPanel();
+  }
+
+  async continueTask(taskId: string): Promise<void> {
+    await this.activityProvider.continueTask(taskId);
+  }
+
+  async cancelTask(taskId: string): Promise<void> {
+    await this.taskService.cancelTask(taskId);
+  }
+
+  async openTaskResult(taskId: string): Promise<void> {
+    await this.activityProvider.openResult(taskId);
   }
 
   getDashboardSnapshot() {
@@ -95,45 +149,40 @@ class ClawDriveRuntime {
       gatewayUrl: `${cfg.gatewayTls ? "wss" : "ws"}://${cfg.gatewayHost}:${cfg.gatewayPort}`,
       connected: this.connectionState === "connected",
       callable: isCallableWithLocalConfig(),
-      providerReady: false,
+      providerStatus: this.providerStatusLabel(),
       commands: getRegisteredCommands(),
     };
   }
+
+  private providerStatusLabel(): string {
+    return getProviderStatusLabel(this.taskService.getProviderStatus());
+  }
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const runtime = new ClawDriveRuntime(context);
+  await runtime.initialize();
   log(t("log.activating"));
 
   context.subscriptions.push(
     getOutputChannel(),
+    vscode.window.registerTreeDataProvider("clawdrive.activity", runtime.getActivityProvider()),
     vscode.commands.registerCommand("clawdrive.dashboard", () => {
       showDashboardPanel({
         getSnapshot: () => runtime.getDashboardSnapshot(),
         onConnect: async () => {
           runtime.connect();
         },
-        onDisconnect: async () => {
-          runtime.disconnect();
-        },
         onOpenSettings: async () => {
           showSettingsPanel({
             onSaveAndConnect: async () => {
+              await runtime.refreshProviderStatus();
               runtime.connect();
-            },
-            onDiagnose: async () => {
-              await runtime.diagnose();
             },
           });
         },
         onDiagnose: async () => {
           await runtime.diagnose();
-        },
-        onShowStatus: async () => {
-          await runtime.showStatus();
-        },
-        onOpenLog: async () => {
-          runtime.openLog();
         },
       });
     }),
@@ -144,12 +193,25 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("clawdrive.settings", () => {
       showSettingsPanel({
         onSaveAndConnect: async () => {
+          await runtime.refreshProviderStatus();
           runtime.connect();
         },
-        onDiagnose: async () => {
-          await runtime.diagnose();
-        },
       });
+    }),
+    vscode.commands.registerCommand("clawdrive.activity.refresh", () => runtime.getActivityProvider().refresh()),
+    vscode.commands.registerCommand("clawdrive.activity.openResult", (taskId: string) => runtime.openTaskResult(taskId)),
+    vscode.commands.registerCommand("clawdrive.activity.continue", (taskId: string) => runtime.continueTask(taskId)),
+    vscode.commands.registerCommand("clawdrive.activity.cancel", (taskId: string) => runtime.cancelTask(taskId)),
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
+      if (event.affectsConfiguration("clawdrive.provider") || event.affectsConfiguration("clawdrive.tasks")) {
+        await runtime.refreshProviderStatus();
+      }
+      if (event.affectsConfiguration("clawdrive.autoConnect")) {
+        const cfg = getConfig();
+        if (cfg.autoConnect && runtime.getConnectionState() === "disconnected") {
+          runtime.connect();
+        }
+      }
     }),
     { dispose: () => runtime.dispose() }
   );

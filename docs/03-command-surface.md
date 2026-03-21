@@ -1,31 +1,10 @@
 # Command Surface Summary
 
-## Implemented Families In The Current Repository
+## Implemented Command Surface
 
-The current repository exposes these command families:
+The current repository exposes these stable remote commands:
 
-- `vscode.file.*`
-- `vscode.dir.list`
-- `vscode.editor.*`
-- `vscode.diagnostics.get`
-- `vscode.workspace.info`
-- `vscode.lang.*`
-- `vscode.code.format`
-- `vscode.git.*`
-- `vscode.test.*`
-- `vscode.debug.*`
-- `vscode.terminal.run`
-- `vscode.agent.*`
-- `vscode.agent.task.*`
-
-## Not Yet Implemented In The Current Repository
-
-- `vscode.search.text`
-- `vscode.search.files`
-
-## Minimal Phase Order For The Rewrite
-
-### Phase 1
+### Direct Read-Only Commands
 
 - `vscode.workspace.info`
 - `vscode.file.read`
@@ -33,49 +12,11 @@ The current repository exposes these command families:
 - `vscode.editor.active`
 - `vscode.diagnostics.get`
 
-### Phase 2
+These are intended for narrow inspection and lightweight read flows.
+They do not enter the task queue.
 
-- `vscode.file.write`
-- `vscode.file.edit`
-- `vscode.file.delete`
-- `vscode.editor.openFiles`
-- `vscode.editor.selections`
+### Long-Running Task Commands
 
-### Phase 3
-
-- `vscode.lang.definition`
-- `vscode.lang.references`
-- `vscode.lang.hover`
-- `vscode.lang.symbols`
-- `vscode.lang.rename`
-- `vscode.lang.codeActions`
-- `vscode.lang.applyCodeAction`
-- `vscode.code.format`
-
-### Phase 4
-
-- `vscode.git.status`
-- `vscode.git.diff`
-- `vscode.git.log`
-- `vscode.git.blame`
-- `vscode.git.stage`
-- `vscode.git.unstage`
-- `vscode.git.commit`
-- `vscode.git.stash`
-
-### Phase 5
-
-- `vscode.test.list`
-- `vscode.test.run`
-- `vscode.test.results`
-- `vscode.debug.*`
-
-### Phase 6
-
-- `vscode.terminal.run`
-- `vscode.agent.status`
-- `vscode.agent.run`
-- `vscode.agent.setup`
 - `vscode.agent.task.start`
 - `vscode.agent.task.status`
 - `vscode.agent.task.list`
@@ -83,9 +24,25 @@ The current repository exposes these command families:
 - `vscode.agent.task.cancel`
 - `vscode.agent.task.result`
 
-## Agent Task States
+These are the stable public task surface for provider-backed work.
 
-The current repository uses these task lifecycle states:
+## Current Task Modes
+
+The current implementation supports:
+
+- `analyze`
+- `plan`
+
+It does not currently expose write-capable `apply`.
+
+If a request is clearly asking for code changes, the expected v1 behavior is:
+
+- do not execute writes
+- steer the request back into planning first
+
+## Current Task States
+
+The current repository uses these lifecycle states:
 
 - `queued`
 - `running`
@@ -95,44 +52,61 @@ The current repository uses these task lifecycle states:
 - `cancelled`
 - `interrupted`
 
-## Agent Task Modes
+These states are persisted and also surfaced through the activity view and task APIs.
 
-The current task model uses:
+## Routing Split
 
-- `agent`
-- `plan`
-- `ask`
+The intended split for the current milestone is:
 
-## Provider Direction
+- simple inspect and query -> direct read-only commands
+- broad explanation and multi-file understanding -> `analyze`
+- options, tradeoffs, and "do not modify anything" -> `plan`
+- write intent -> blocked in v1 and redirected toward planning
 
-The current repository is centered on Codex task execution, but the rewrite should treat provider choice as an implementation detail behind a stable task contract.
+## Activity And Recovery Surface
 
-That means the new repository should aim for:
+The current repository also includes operator-side support for task execution:
 
-- provider-neutral task commands
-- provider-specific adapters behind the task layer
-- user-facing behavior that emphasizes assistant intent rather than provider brand names
+- persisted task snapshots in extension global storage
+- persisted event history
+- one active provider-backed task at a time with FIFO queueing
+- activity view actions for open result, continue, and cancel
+- restart recovery where `running` becomes `interrupted`
 
-Codex can be the first supported provider.
-Claude or other providers should be considered future-compatible targets rather than out-of-model exceptions.
+## Current Provider Reality
 
-## Surface Honesty
+The public task contract is provider-neutral.
 
-The rewrite docs should distinguish between:
+The current implementation reality is:
 
-- stable external command names
-- current MVP behavior behind those names
-- future-upgrade targets
+- provider kind: `codex`
+- runtime: local Codex CLI executable
+- readiness depends on enablement, executable discovery, and runnable CLI state
 
-Important examples from the current repository:
+This is acceptable for v1 as long as the public task API does not need to change to add another provider later.
 
-- the public task API is provider-shaped, but the implementation only supports Codex today
-- legacy `vscode.agent.*` commands and resumable `vscode.agent.task.*` commands both exist and should not be conflated
-- some test and git commands are pragmatic shims rather than deep VS Code-native integrations
+## Not Implemented Yet
 
-That behavior is acceptable as long as it is documented honestly and treated as deliberate scope, not hidden mismatch
+The following command families are still roadmap items, not current implementation:
 
-## Rewrite Guidance
+- write-oriented file commands
+- language intelligence commands
+- git command family
+- test command family
+- debug command family
+- terminal execution commands
+- legacy `vscode.agent.*` expansion beyond setup and compatibility use
 
-The new repository does not need to preserve the same file layout.
-It does need to preserve a stable external command contract once the new command surface is published.
+## Surface Honesty Rule
+
+Docs for this repository should distinguish clearly between:
+
+- what command names are already stable and callable
+- what is implemented behind those names today
+- what is still roadmap only
+
+The current repository should be documented as:
+
+- honest about direct read-only coverage
+- honest about planning-only task execution
+- honest about Codex CLI being the only implemented provider

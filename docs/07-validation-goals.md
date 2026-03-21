@@ -6,29 +6,43 @@ The rewrite needs explicit success criteria.
 
 Without them, it is too easy to ship a node that can technically execute commands but still fails the actual product goal of letting OpenClaw drive IDE agents naturally inside VS Code.
 
-## Phase 1 Slice Status
+## Current Milestone Status
 
-Phase 1 is intentionally narrower than the full product target.
+The repository has now validated two separate slices:
 
-The first thin slice is considered complete only when all of these are true:
+### Transport And Direct Read Slice
+
+Validated:
 
 - the VS Code extension reaches `connected` against a real Gateway
-- the node advertises `vscode.workspace.info`
-- OpenClaw can invoke `vscode.workspace.info` through the Gateway
+- the node advertises the current read-only command surface
+- OpenClaw can invoke `vscode.workspace.info`
 - ClawDrive returns a successful structured result
-- the operator can confirm the flow from Dashboard, diagnosis output, and logs
+- the operator can confirm the flow from dashboard, diagnosis output, and logs
 
-That thin slice has now been validated locally.
+### Task And Provider Slice
+
+Validated:
+
+- OpenClaw can invoke `vscode.agent.task.start`
+- ClawDrive can queue and run provider-backed tasks
+- Codex CLI can be discovered and launched from the VS Code node
+- provider-backed `analyze` and `plan` flows can execute through the task contract
+- task execution is observable from OpenClaw and the VS Code activity view
+
+This is enough to say that the current planning and analysis milestone is real, not just architectural.
+
+It is not enough to claim that write execution is complete.
 
 ## Product-Level Acceptance
 
-The rewrite should not be considered successful until all of these are true.
+The rewrite should not be considered fully complete until all of these are true.
 
 ### Natural-Language Entry
 
 - a user can ask for inspection, analysis, planning, continuation, or implementation in ordinary language
-- normal use does not require the user to type raw `vscode.*` commands
-- normal use does not require the user to know task IDs or provider session IDs
+- normal use does not require raw `vscode.*` commands
+- normal use does not require task IDs or provider session IDs
 
 ### IDE Agent Routing
 
@@ -50,17 +64,20 @@ The rewrite should not be considered successful until all of these are true.
 
 ## Minimum End-To-End Scenarios
 
-The new repository should pass these end-to-end checks.
+The current repository should now pass these checks.
 
 ### Scenario 1: Inspect
 
 User goal:
 
-- ask what workspace is open or ask to read a file
+- ask what workspace is open
+- read a file
+- list a directory
+- inspect diagnostics
 
 Expected result:
 
-- the system completes the request through read-only capability
+- the system completes the request through direct read-only capability
 - the reply is phrased as assistant help, not protocol output
 
 ### Scenario 2: Analyze
@@ -87,30 +104,18 @@ Expected result:
 - at least one recommended option is surfaced
 - the task can pause and resume cleanly after a user decision
 
-### Scenario 4: Apply
+### Scenario 4: Continue
 
 User goal:
 
-- ask to implement the chosen plan
-
-Expected result:
-
-- the system enters write-capable task execution
-- progress remains readable
-- the final answer summarizes what changed and whether any follow-up is needed
-
-### Scenario 5: Continue
-
-User goal:
-
-- say "continue", "keep going", or "use the recommended option"
+- say "continue" or "use the recommended option"
 
 Expected result:
 
 - the system resolves the correct active or waiting task when unambiguous
 - it does not require raw lifecycle commands for the common case
 
-### Scenario 6: Failure And Recovery
+### Scenario 5: Failure And Recovery
 
 User goal:
 
@@ -119,31 +124,26 @@ User goal:
 Expected result:
 
 - the user gets a short explanation
-- timeout, cancellation, interruption, and execution failure are not collapsed into one generic error
+- timeout, cancellation, interruption, and execution failure stay distinct
 - the system can either resume, retry, or explain why not
+
+## Still Out Of Scope
+
+The following should not yet be claimed as complete:
+
+- write-capable `apply`
+- file mutation command surface
+- full language, git, test, debug, or terminal integration
+- provider parity beyond Codex CLI
 
 ## Operator Validation
 
-These checks matter even if the user never sees them directly.
+These checks matter even if the user never sees them directly:
 
 - the command surface advertised by the node matches the implementation that actually exists
 - task storage, event emission, and activity summaries stay consistent across restart and reconnect
 - provider-specific failures are translated into stable task states
 - route decisions can be reasoned about during debugging
-
-## Phase 1 Evidence
-
-The current repository now has direct evidence for the minimum connection path:
-
-- Dashboard-triggered connect succeeds
-- diagnosis reports `connected` and `callable`
-- ClawDrive logs show:
-  - `Connected to Gateway`
-  - `invoke request: vscode.workspace.info`
-  - `invoke result: vscode.workspace.info ok=true`
-
-This is enough to close the transport-side Phase 1 slice.
-It is not enough to claim that the full natural-language product goal is complete.
 
 ## Scope Guard
 
@@ -153,4 +153,4 @@ If a build only proves:
 - remote invocation
 - a growing `vscode.*` list
 
-but it does not prove natural-language-driven assistant behavior, it is not yet at the target product bar.
+but it does not prove natural-language-driven planning and analysis behavior through the task layer, it is still below the intended product bar.

@@ -7,6 +7,7 @@ import {
 } from "./device-identity";
 import { log, logError } from "./logger";
 import { PendingRequestStore } from "./gateway-pending";
+import type { TaskEventRecord } from "./tasks/types";
 
 const PROTOCOL_VERSION = 3;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
@@ -114,6 +115,18 @@ export class GatewayClient {
           entry.reject(error instanceof Error ? error : new Error(String(error)));
         }
       }
+    });
+  }
+
+  emitTaskLifecycle(event: TaskEventRecord): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this._state !== "connected") {
+      return;
+    }
+    void this.request("node.event", {
+      type: "task.lifecycle",
+      payload: event,
+    }).catch(() => {
+      // Some Gateways may not yet accept node-side lifecycle events.
     });
   }
 

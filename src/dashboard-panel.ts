@@ -8,23 +8,22 @@ export interface DashboardSnapshot {
   gatewayUrl: string;
   connected: boolean;
   callable: boolean;
-  providerReady: boolean;
+  providerStatus: string;
   commands: string[];
 }
 
 type DashboardHandlers = {
   getSnapshot: () => DashboardSnapshot;
   onConnect: () => Promise<void> | void;
-  onDisconnect: () => Promise<void> | void;
   onOpenSettings: () => Promise<void> | void;
   onDiagnose: () => Promise<void>;
-  onShowStatus: () => Promise<void>;
-  onOpenLog: () => Promise<void> | void;
 };
 
 let panel: vscode.WebviewPanel | null = null;
+let activeHandlers: DashboardHandlers | null = null;
 
 export function showDashboardPanel(handlers: DashboardHandlers): void {
+  activeHandlers = handlers;
   if (panel) {
     panel.reveal(vscode.ViewColumn.One);
     void postSnapshot(handlers);
@@ -59,11 +58,6 @@ export function showDashboardPanel(handlers: DashboardHandlers): void {
         await postSnapshot(handlers);
         return;
       }
-      if (type === "disconnect") {
-        await handlers.onDisconnect();
-        await postSnapshot(handlers);
-        return;
-      }
       if (type === "settings") {
         await handlers.onOpenSettings();
         await postSnapshot(handlers);
@@ -72,15 +66,6 @@ export function showDashboardPanel(handlers: DashboardHandlers): void {
       if (type === "diagnose") {
         await handlers.onDiagnose();
         await postSnapshot(handlers);
-        return;
-      }
-      if (type === "status") {
-        await handlers.onShowStatus();
-        return;
-      }
-      if (type === "log") {
-        await handlers.onOpenLog();
-        return;
       }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -91,7 +76,15 @@ export function showDashboardPanel(handlers: DashboardHandlers): void {
 
   panel.onDidDispose(() => {
     panel = null;
+    activeHandlers = null;
   });
+}
+
+export function refreshDashboardPanel(): void {
+  if (!panel || !activeHandlers) {
+    return;
+  }
+  void postSnapshot(activeHandlers);
 }
 
 async function postSnapshot(handlers: DashboardHandlers): Promise<void> {
@@ -123,7 +116,7 @@ function getHtml(cspSource: string, nonce: string): string {
   <style>
     :root {
       color-scheme: light dark;
-      --hero-bg: linear-gradient(135deg, color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-button-background) 12%), color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-sideBar-background) 4%));
+      --hero-bg: linear-gradient(135deg, color-mix(in srgb, var(--vscode-editor-background) 84%, var(--vscode-button-background) 16%), color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-sideBar-background) 6%));
       --card-bg: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%);
       --line: color-mix(in srgb, var(--vscode-widget-border, #444) 60%, transparent);
       --ok-bg: color-mix(in srgb, #3fb950 14%, transparent);
@@ -132,48 +125,38 @@ function getHtml(cspSource: string, nonce: string): string {
     }
     body {
       margin: 0;
-      padding: 24px 20px 36px;
+      padding: 24px 20px 32px;
       font-family: var(--vscode-font-family);
       background: var(--vscode-editor-background);
       color: var(--vscode-foreground);
     }
     .wrap {
-      max-width: 1120px;
+      max-width: 960px;
       margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+    .hero, .card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--card-bg);
     }
     .hero {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      gap: 18px;
-      border: 1px solid var(--line);
-      border-radius: 20px;
+      gap: 16px;
       background: var(--hero-bg);
       padding: 22px;
-      margin-bottom: 18px;
     }
     h1 {
-      margin: 0 0 10px;
+      margin: 0 0 8px;
       font-size: 28px;
     }
     .sub {
       color: var(--vscode-descriptionForeground);
       line-height: 1.6;
-      max-width: 720px;
-    }
-    .heroSide {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      gap: 8px;
-    }
-    .locale {
-      display: inline-flex;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px;
-      gap: 4px;
-      background: var(--card-bg);
+      max-width: 640px;
     }
     .pill {
       display: inline-flex;
@@ -187,33 +170,30 @@ function getHtml(cspSource: string, nonce: string): string {
     }
     .pill.ok { background: var(--ok-bg); }
     .pill.warn { background: var(--warn-bg); }
-    .grid {
+    .layout {
       display: grid;
-      grid-template-columns: 1.25fr 0.95fr;
+      grid-template-columns: 1.15fr 0.85fr;
       gap: 16px;
     }
     .card {
-      border: 1px solid var(--line);
-      border-radius: 16px;
       padding: 18px;
-      background: var(--card-bg);
     }
     .title {
+      margin: 0 0 14px;
       font-size: 16px;
       font-weight: 600;
-      margin-bottom: 16px;
     }
     .stats {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
     .stat {
       border: 1px solid var(--line);
       border-radius: 14px;
       padding: 14px;
-      background: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-sideBar-background) 18%);
+      background: color-mix(in srgb, var(--vscode-editor-background) 84%, var(--vscode-sideBar-background) 16%);
     }
     .label {
       color: var(--vscode-descriptionForeground);
@@ -223,7 +203,7 @@ function getHtml(cspSource: string, nonce: string): string {
       letter-spacing: 0.04em;
     }
     .value {
-      font-size: 20px;
+      font-size: 18px;
       font-weight: 600;
     }
     .ok { color: #4caf50; }
@@ -240,13 +220,12 @@ function getHtml(cspSource: string, nonce: string): string {
     .key { color: var(--vscode-descriptionForeground); }
     .actions {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
     }
     button {
       border: none;
       border-radius: 10px;
-      padding: 10px 14px;
+      padding: 11px 14px;
       cursor: pointer;
       font: inherit;
       text-align: left;
@@ -259,39 +238,18 @@ function getHtml(cspSource: string, nonce: string): string {
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
     }
-    .locale button {
-      border-radius: 999px;
-      padding: 6px 12px;
-      background: transparent;
-      color: var(--vscode-foreground);
-      text-align: center;
-    }
-    .locale button.active {
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
+    .hint {
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.6;
+      font-size: 13px;
     }
     .cmds {
       margin: 0;
       padding-left: 18px;
       line-height: 1.8;
     }
-    .steps, .notes {
-      display: grid;
-      gap: 10px;
-    }
-    .step, .note {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px;
-      background: color-mix(in srgb, var(--card-bg) 90%, var(--vscode-button-background) 10%);
-    }
-    .step strong, .note strong {
-      display: block;
-      margin-bottom: 6px;
-    }
     .error {
       display: none;
-      margin-bottom: 18px;
       border: 1px solid var(--vscode-errorForeground, #f14c4c);
       border-radius: 10px;
       padding: 10px 12px;
@@ -299,10 +257,8 @@ function getHtml(cspSource: string, nonce: string): string {
     }
     @media (max-width: 860px) {
       .hero { flex-direction: column; }
-      .heroSide { justify-content: flex-start; }
-      .grid { grid-template-columns: 1fr; }
+      .layout { grid-template-columns: 1fr; }
       .stats { grid-template-columns: 1fr; }
-      .actions { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -313,16 +269,10 @@ function getHtml(cspSource: string, nonce: string): string {
         <h1 id="title"></h1>
         <div class="sub" id="subtitle"></div>
       </div>
-      <div class="heroSide">
-        <div id="connectionPill" class="pill"></div>
-        <div class="locale">
-          <button id="localeZh" type="button">中文</button>
-          <button id="localeEn" type="button">English</button>
-        </div>
-      </div>
+      <div id="connectionPill" class="pill"></div>
     </div>
     <div id="error" class="error"></div>
-    <div class="grid">
+    <div class="layout">
       <div class="card">
         <div class="title" id="overviewTitle"></div>
         <div class="stats">
@@ -347,101 +297,59 @@ function getHtml(cspSource: string, nonce: string): string {
         <div class="title" id="actionsTitle"></div>
         <div class="actions">
           <button class="primary" id="connect"></button>
-          <button class="secondary" id="disconnect"></button>
           <button class="secondary" id="settings"></button>
           <button class="secondary" id="diagnose"></button>
-          <button class="secondary" id="status"></button>
-          <button class="secondary" id="log"></button>
         </div>
+        <p class="hint" id="actionsHint"></p>
       </div>
-      <div class="card">
-        <div class="title" id="commandsTitle"></div>
-        <ul id="commands" class="cmds"></ul>
-      </div>
-      <div class="card">
-        <div class="title" id="stepsTitle"></div>
-        <div class="steps">
-          <div class="step"><strong id="step1Title"></strong><div id="step1Body"></div></div>
-          <div class="step"><strong id="step2Title"></strong><div id="step2Body"></div></div>
-          <div class="step"><strong id="step3Title"></strong><div id="step3Body"></div></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="title" id="notesTitle"></div>
-        <div class="notes">
-          <div class="note"><strong id="noteScopeKey"></strong><div id="noteScopeValue"></div></div>
-          <div class="note"><strong id="noteChangesKey"></strong><div id="noteChangesValue"></div></div>
-          <div class="note"><strong id="noteFailureKey"></strong><div id="noteFailureValue"></div></div>
-        </div>
-      </div>
+    </div>
+    <div class="card">
+      <div class="title" id="commandsTitle"></div>
+      <ul id="commands" class="cmds"></ul>
     </div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const state = Object.assign({ locale: ${initialLocale} }, vscode.getState() || {});
     const copy = {
-      title: { "zh-CN": "ClawDrive 控制台", "en": "ClawDrive Dashboard" },
+      title: { "zh-CN": "\\u63a7\\u5236\\u53f0", "en": "Dashboard" },
       subtitle: {
-        "zh-CN": "把 Phase 1 常用操作集中到一个界面：先看状态，再做连接、设置和诊断，最后验证 OpenClaw 的真实调用。",
-        "en": "Bring the common Phase 1 actions into one screen: inspect state first, then connect, configure, diagnose, and finally verify a real OpenClaw invocation."
+        "zh-CN": "\\u53ea\\u4fdd\\u7559\\u5fc5\\u8981\\u6d41\\u7a0b\\uff1a\\u5148\\u770b\\u72b6\\u6001\\uff0c\\u9700\\u8981\\u65f6\\u6253\\u5f00\\u8bbe\\u7f6e\\uff0c\\u4fee\\u6539\\u540e\\u76f4\\u63a5\\u70b9\\u201c\\u4fdd\\u5b58\\u5e76\\u8fde\\u63a5\\u201d\\u3002",
+        "en": "Only the essential flow remains: check status, open settings when needed, then save and connect."
       },
-      overviewTitle: { "zh-CN": "当前状态", "en": "Current State" },
-      connectionLabel: { "zh-CN": "连接", "en": "Connection" },
-      callableLabel: { "zh-CN": "可调用", "en": "Callable" },
-      providerLabel: { "zh-CN": "Provider 状态", "en": "Provider Status" },
-      displayNameKey: { "zh-CN": "显示名称", "en": "Display Name" },
+      overviewTitle: { "zh-CN": "\\u5f53\\u524d\\u72b6\\u6001", "en": "Current State" },
+      connectionLabel: { "zh-CN": "\\u8fde\\u63a5", "en": "Connection" },
+      callableLabel: { "zh-CN": "\\u53ef\\u8c03\\u7528", "en": "Callable" },
+      providerLabel: { "zh-CN": "Provider", "en": "Provider" },
+      displayNameKey: { "zh-CN": "\\u663e\\u793a\\u540d\\u79f0", "en": "Display Name" },
       gatewayKey: { "zh-CN": "Gateway", "en": "Gateway" },
-      commandCountKey: { "zh-CN": "远程命令数", "en": "Remote Commands" },
-      actionsTitle: { "zh-CN": "下一步操作", "en": "Next Actions" },
-      connect: { "zh-CN": "连接 Gateway", "en": "Connect" },
-      disconnect: { "zh-CN": "断开连接", "en": "Disconnect" },
-      settings: { "zh-CN": "打开设置", "en": "Open Settings" },
-      diagnose: { "zh-CN": "运行诊断", "en": "Run Diagnosis" },
-      status: { "zh-CN": "输出状态", "en": "Show Status" },
-      log: { "zh-CN": "打开日志", "en": "Open Log" },
-      commandsTitle: { "zh-CN": "当前命令面", "en": "Current Command Surface" },
-      commandsEmpty: { "zh-CN": "当前没有广告任何命令", "en": "No commands advertised" },
-      stepsTitle: { "zh-CN": "最小联调路径", "en": "Minimal Integration Path" },
-      step1Title: { "zh-CN": "1. 配置 Gateway", "en": "1. Configure the Gateway" },
-      step1Body: {
-        "zh-CN": "先打开设置，确认 host、port、token 与 TLS 是否和当前 Gateway 一致。",
-        "en": "Open settings first and confirm host, port, token, and TLS match the current Gateway."
+      commandCountKey: { "zh-CN": "\\u547d\\u4ee4\\u6570\\u91cf", "en": "Command Count" },
+      actionsTitle: { "zh-CN": "\\u5feb\\u901f\\u64cd\\u4f5c", "en": "Quick Actions" },
+      actionsHint: {
+        "zh-CN": "\\u9ad8\\u7ea7\\u64cd\\u4f5c\\uff08\\u65ad\\u5f00\\u8fde\\u63a5\\u3001\\u65e5\\u5fd7\\u3001\\u8be6\\u7ec6\\u72b6\\u6001\\uff09\\u4ecd\\u53ef\\u4ee5\\u4ece\\u547d\\u4ee4\\u9762\\u677f\\u8fdb\\u5165\\uff0c\\u4e0d\\u653e\\u5728\\u4e3b\\u754c\\u9762\\u3002",
+        "en": "Advanced actions such as disconnect, logs, and detailed status remain available from the command palette."
       },
-      step2Title: { "zh-CN": "2. 发起连接", "en": "2. Connect" },
-      step2Body: {
-        "zh-CN": "点击连接后，优先看“连接”和“可调用”两个状态块。",
-        "en": "After connecting, check the Connection and Callable state blocks first."
-      },
-      step3Title: { "zh-CN": "3. 验证真实调用", "en": "3. Verify a Real Invocation" },
-      step3Body: {
-        "zh-CN": "从 OpenClaw 发起 vscode.workspace.info，并在日志里确认 invoke request / result。",
-        "en": "Invoke vscode.workspace.info from OpenClaw and confirm invoke request / result in the log."
-      },
-      notesTitle: { "zh-CN": "Phase 1 备注", "en": "Phase 1 Notes" },
-      noteScopeKey: { "zh-CN": "当前范围", "en": "Current Scope" },
-      noteScopeValue: { "zh-CN": "Gateway 接入 + vscode.workspace.info", "en": "Gateway integration + vscode.workspace.info" },
-      noteChangesKey: { "zh-CN": "OpenClaw 改动", "en": "OpenClaw Changes" },
-      noteChangesValue: { "zh-CN": "不需要修改 OpenClaw 源码", "en": "No OpenClaw source changes required" },
-      noteFailureKey: { "zh-CN": "典型故障", "en": "Typical Failure" },
-      noteFailureValue: {
-        "zh-CN": "allowCommands 未放行 vscode.workspace.info，或设备身份不兼容。",
-        "en": "allowCommands does not permit vscode.workspace.info, or the device identity is incompatible."
-      },
-      pillConnected: { "zh-CN": "Gateway 已连接", "en": "Gateway Connected" },
-      pillConnecting: { "zh-CN": "Gateway 连接中", "en": "Gateway Connecting" },
-      pillDisconnected: { "zh-CN": "Gateway 未连接", "en": "Gateway Disconnected" },
-      valueConnected: { "zh-CN": "已连接", "en": "Connected" },
-      valueDisconnected: { "zh-CN": "未连接", "en": "Disconnected" },
-      valueReady: { "zh-CN": "就绪", "en": "Ready" },
-      valueBlocked: { "zh-CN": "受限", "en": "Blocked" },
-      valueNotReady: { "zh-CN": "未接入", "en": "Not Ready" },
-      unknownError: { "zh-CN": "未知错误", "en": "Unknown error" }
+      connect: { "zh-CN": "\\u8fde\\u63a5 Gateway", "en": "Connect" },
+      reconnect: { "zh-CN": "\\u91cd\\u65b0\\u8fde\\u63a5", "en": "Reconnect" },
+      settings: { "zh-CN": "\\u6253\\u5f00\\u8bbe\\u7f6e", "en": "Open Settings" },
+      diagnose: { "zh-CN": "\\u8fd0\\u884c\\u8bca\\u65ad", "en": "Run Diagnosis" },
+      commandsTitle: { "zh-CN": "\\u5f53\\u524d\\u547d\\u4ee4\\u9762", "en": "Current Command Surface" },
+      commandsEmpty: { "zh-CN": "\\u5f53\\u524d\\u6ca1\\u6709\\u5e7f\\u544a\\u4efb\\u4f55\\u547d\\u4ee4", "en": "No commands advertised" },
+      pillConnected: { "zh-CN": "Gateway \\u5df2\\u8fde\\u63a5", "en": "Gateway Connected" },
+      pillConnecting: { "zh-CN": "Gateway \\u8fde\\u63a5\\u4e2d", "en": "Gateway Connecting" },
+      pillDisconnected: { "zh-CN": "Gateway \\u672a\\u8fde\\u63a5", "en": "Gateway Disconnected" },
+      valueConnected: { "zh-CN": "\\u5df2\\u8fde\\u63a5", "en": "Connected" },
+      valueDisconnected: { "zh-CN": "\\u672a\\u8fde\\u63a5", "en": "Disconnected" },
+      valueReady: { "zh-CN": "\\u5c31\\u7eea", "en": "Ready" },
+      valueBlocked: { "zh-CN": "\\u53d7\\u9650", "en": "Blocked" },
+      valueNotReady: { "zh-CN": "\\u672a\\u63a5\\u5165", "en": "Not Ready" },
+      unknownError: { "zh-CN": "\\u672a\\u77e5\\u9519\\u8bef", "en": "Unknown error" }
     };
     function tr(key) {
       const entry = copy[key];
       return entry ? (entry[state.locale] || entry["zh-CN"] || entry["en"] || key) : key;
     }
-    function applyLocale() {
+    function applyCopy() {
       Object.keys(copy).forEach((id) => {
         const el = document.getElementById(id);
         if (el) {
@@ -449,8 +357,6 @@ function getHtml(cspSource: string, nonce: string): string {
         }
       });
       document.documentElement.lang = state.locale === "en" ? "en" : "zh-CN";
-      document.getElementById("localeZh").classList.toggle("active", state.locale === "zh-CN");
-      document.getElementById("localeEn").classList.toggle("active", state.locale === "en");
       vscode.setState(state);
     }
     function showError(message) {
@@ -464,23 +370,24 @@ function getHtml(cspSource: string, nonce: string): string {
       el.className = "value " + cssClass;
     }
     function renderSnapshot(snapshot) {
-      if (snapshot.locale && !state.userSelectedLocale) {
-        state.locale = snapshot.locale;
-      }
       const pill = document.getElementById("connectionPill");
+      const connectButton = document.getElementById("connect");
       if (snapshot.connectionState === "connected") {
         pill.textContent = tr("pillConnected");
         pill.className = "pill ok";
+        connectButton.textContent = tr("reconnect");
       } else if (snapshot.connectionState === "connecting") {
         pill.textContent = tr("pillConnecting");
         pill.className = "pill warn";
+        connectButton.textContent = tr("reconnect");
       } else {
         pill.textContent = tr("pillDisconnected");
         pill.className = "pill";
+        connectButton.textContent = tr("connect");
       }
       setStatus("connectedValue", snapshot.connected ? tr("valueConnected") : tr("valueDisconnected"), snapshot.connected ? "ok" : "warn");
       setStatus("callableValue", snapshot.callable ? tr("valueReady") : tr("valueBlocked"), snapshot.callable ? "ok" : "warn");
-      setStatus("providerValue", snapshot.providerReady ? tr("valueReady") : tr("valueNotReady"), snapshot.providerReady ? "ok" : "muted");
+      setStatus("providerValue", snapshot.providerStatus || tr("valueNotReady"), "muted");
       document.getElementById("displayName").textContent = snapshot.displayName;
       document.getElementById("gatewayUrl").textContent = snapshot.gatewayUrl;
       document.getElementById("commandCount").textContent = String((snapshot.commands || []).length);
@@ -498,24 +405,11 @@ function getHtml(cspSource: string, nonce: string): string {
           list.appendChild(li);
         });
       }
-      applyLocale();
+      applyCopy();
     }
     document.getElementById("connect").addEventListener("click", () => vscode.postMessage({ type: "connect" }));
-    document.getElementById("disconnect").addEventListener("click", () => vscode.postMessage({ type: "disconnect" }));
     document.getElementById("settings").addEventListener("click", () => vscode.postMessage({ type: "settings" }));
     document.getElementById("diagnose").addEventListener("click", () => vscode.postMessage({ type: "diagnose" }));
-    document.getElementById("status").addEventListener("click", () => vscode.postMessage({ type: "status" }));
-    document.getElementById("log").addEventListener("click", () => vscode.postMessage({ type: "log" }));
-    document.getElementById("localeZh").addEventListener("click", () => {
-      state.locale = "zh-CN";
-      state.userSelectedLocale = true;
-      applyLocale();
-    });
-    document.getElementById("localeEn").addEventListener("click", () => {
-      state.locale = "en";
-      state.userSelectedLocale = true;
-      applyLocale();
-    });
     window.addEventListener("message", (event) => {
       const msg = event.data || {};
       if (msg.type === "snapshot") {
@@ -526,7 +420,7 @@ function getHtml(cspSource: string, nonce: string): string {
         showError(msg.error || tr("unknownError"));
       }
     });
-    applyLocale();
+    applyCopy();
     vscode.postMessage({ type: "refresh" });
   </script>
 </body>

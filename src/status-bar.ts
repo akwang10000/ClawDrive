@@ -9,10 +9,10 @@ export class ClawDriveStatusBar {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     this.item.command = "clawdrive.dashboard";
     this.item.show();
-    this.update("disconnected", false);
+    this.update("disconnected", false, "Disabled");
   }
 
-  update(state: ConnectionState, callable: boolean): void {
+  update(state: ConnectionState, callable: boolean, providerLabel: string): void {
     if (state === "connected") {
       this.item.text = callable ? "$(plug) ClawDrive" : "$(warning) ClawDrive";
     } else if (state === "connecting") {
@@ -31,7 +31,7 @@ export class ClawDriveStatusBar {
     this.item.tooltip = [
       t("statusBar.connection", stateText),
       t("statusBar.callable", callable ? t("status.yes") : t("status.no")),
-      t("statusBar.provider", t("status.notReady")),
+      t("statusBar.provider", providerLabel),
     ].join("\n");
   }
 

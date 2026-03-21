@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the v1 conversation contract for using OpenClaw with `ClawDrive for VS Code` through natural language instead of raw protocol commands.
+This document defines the current v1 conversation contract for using OpenClaw with `ClawDrive for VS Code` through natural language instead of raw protocol commands.
 
 It is written for end users and prompt authors first, not protocol debuggers.
 
@@ -28,12 +28,12 @@ Default behavior:
 Examples:
 
 - "Read the README and tell me how to install this project."
-- "Check the current git status."
 - "Show me the files under `src`."
+- "Check current diagnostics."
 
 Recommended route:
 
-- direct read-only capability
+- direct read-only commands
 
 ### 2. Analyze And Summarize
 
@@ -41,12 +41,12 @@ Examples:
 
 - "Summarize the current architecture."
 - "Explain how the Gateway flow works."
-- "Compare two implementation directions."
+- "Compare these two modules."
 
 Recommended route:
 
 - start with read-only inspection
-- upgrade to task analysis mode when the request is broad or multi-step
+- upgrade to task `analyze` mode when the request is broad or multi-step
 
 ### 3. Plan And Decide
 
@@ -62,21 +62,7 @@ Recommended route:
 - translate decision requests into plain language
 - avoid raw JSON unless the user asks for it
 
-### 4. Execute And Modify
-
-Examples:
-
-- "Fix this bug."
-- "Apply the recommended approach."
-- "Update the docs."
-
-Recommended route:
-
-- do not write immediately
-- briefly restate intended scope
-- require explicit write intent before entering write-capable execution
-
-### 5. Continue Or Debug
+### 4. Continue Or Debug
 
 Examples:
 
@@ -90,59 +76,35 @@ Recommended route:
 - use diagnostics for connection and readiness problems
 - ask for a specific task only when there is real ambiguity
 
+## Current Write Rule
+
+Broad write execution is not implemented in the current milestone.
+
+If the user asks to:
+
+- fix
+- implement
+- patch
+- edit
+- apply
+
+the expected behavior is:
+
+- do not perform the write directly
+- enter planning behavior or ask for a planning-first step
+
+This is a deliberate v1 safety boundary, not a bug.
+
 ## Routing Rules
 
 Apply these rules in order.
 
 1. If the user asks to read, inspect, check, summarize, or analyze, default to read-only behavior.
 2. If the user asks for options, tradeoffs, or explicitly says not to change anything, force planning behavior.
-3. If the user asks to fix, implement, apply, or commit, do not write immediately. Confirm the intended execution first.
+3. If the user asks to fix, implement, apply, or commit, do not write immediately. Redirect to planning-first behavior.
 4. If the user says continue, keep going, or use the recommended option, resolve the latest waiting or active task internally before treating it as a new task.
 5. If the user asks for status or progress, summarize the task in natural language instead of returning raw task JSON.
 6. Only reveal command names, task identifiers, or protocol details when debugging, failure analysis, or ambiguity makes it necessary.
-
-## Prompt Contract
-
-The assistant prompt should follow these rules.
-
-### Role Framing
-
-Treat the user as talking to an IDE assistant, not a command runner.
-
-Prefer:
-
-- understanding intent
-- choosing the right internal route
-- hiding protocol mechanics
-
-Avoid:
-
-- asking users to name raw commands
-- requiring users to provide task IDs
-- exposing JSON unless needed
-
-### Agent Split
-
-The implementation may contain multiple internal agent surfaces.
-Natural-language long-form work should prefer the provider-neutral task flow rather than older one-shot agent checks or vendor-specific status probes.
-
-### Safety Contract
-
-For any request that could modify code, run terminal commands, or create git history:
-
-- analyze first
-- plan first when the request is broad
-- require explicit user confirmation before write execution
-
-### Task Hiding Contract
-
-Internally the system may use start, status, respond, and result semantics.
-
-Externally it should say things like:
-
-- "I am analyzing the repository."
-- "I organized two directions for you to choose from."
-- "I am continuing with the recommended option."
 
 ## User-Facing Reply Style
 
@@ -184,12 +146,6 @@ Explain how the current Gateway timeout and task orchestration logic works.
 Analyze the next most valuable change for this repository. Give me two options and do not modify anything yet.
 ```
 
-### Execute Template
-
-```text
-Apply the recommended approach, make the code changes, and summarize what changed.
-```
-
 ### Resume Template
 
 ```text
@@ -207,7 +163,7 @@ Check why the VS Code node is connected but still cannot be called.
 This guide is working as intended when:
 
 - users can describe goals in plain language
-- the system chooses inspect, analyze, plan, or apply behavior without asking for raw commands
+- the system chooses inspect, analyze, plan, or continue behavior without asking for raw commands
 - users do not need task IDs for normal flows
 - progress updates are phrased naturally
 - protocol details appear only in debugging or failure explanations

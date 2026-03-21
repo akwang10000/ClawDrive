@@ -2,7 +2,7 @@
   "name": "clawdrive-vscode",
   "displayName": "ClawDrive for VS Code",
   "description": "Natural-language IDE agent bridge for OpenClaw.",
-  "version": "0.1.0",
+  "version": "0.1.7",
   "publisher": "wangtuo",
   "license": "MIT",
   "private": true,
@@ -23,7 +23,8 @@
     "onCommand:clawdrive.connect",
     "onCommand:clawdrive.disconnect",
     "onCommand:clawdrive.diagnoseConnection",
-    "onCommand:clawdrive.settings"
+    "onCommand:clawdrive.settings",
+    "onView:clawdrive.activity"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -51,8 +52,58 @@
       {
         "command": "clawdrive.settings",
         "title": "%package.command.settings%"
+      },
+      {
+        "command": "clawdrive.activity.refresh",
+        "title": "ClawDrive: Refresh Activity"
+      },
+      {
+        "command": "clawdrive.activity.openResult",
+        "title": "ClawDrive: Open Task Result"
+      },
+      {
+        "command": "clawdrive.activity.continue",
+        "title": "ClawDrive: Continue Task"
+      },
+      {
+        "command": "clawdrive.activity.cancel",
+        "title": "ClawDrive: Cancel Task"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "clawdrive.activity",
+          "name": "ClawDrive Activity"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "clawdrive.activity.refresh",
+          "when": "view == clawdrive.activity",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "clawdrive.activity.openResult",
+          "when": "view == clawdrive.activity",
+          "group": "inline"
+        },
+        {
+          "command": "clawdrive.activity.continue",
+          "when": "view == clawdrive.activity && (viewItem == task:waiting_decision || viewItem == task:interrupted)",
+          "group": "inline"
+        },
+        {
+          "command": "clawdrive.activity.cancel",
+          "when": "view == clawdrive.activity && (viewItem == task:queued || viewItem == task:running || viewItem == task:waiting_decision || viewItem == task:interrupted)",
+          "group": "inline"
+        }
+      ]
+    },
     "configuration": {
       "title": "%package.config.title%",
       "properties": {
@@ -76,10 +127,48 @@
           "default": "",
           "description": "%package.config.gateway.token%"
         },
+        "clawdrive.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "%package.config.autoConnect%"
+        },
         "clawdrive.displayName": {
           "type": "string",
           "default": "ClawDrive",
           "description": "%package.config.displayName%"
+        },
+        "clawdrive.provider.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable provider-backed Codex task execution."
+        },
+        "clawdrive.provider.kind": {
+          "type": "string",
+          "default": "codex",
+          "enum": ["codex"],
+          "description": "Provider kind used for long-running tasks."
+        },
+        "clawdrive.provider.codex.path": {
+          "type": "string",
+          "default": "codex",
+          "description": "Bare executable name or absolute path to the Codex CLI."
+        },
+        "clawdrive.provider.codex.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Codex model override for task execution."
+        },
+        "clawdrive.tasks.defaultTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "minimum": 5000,
+          "description": "Default timeout in milliseconds for provider-backed tasks."
+        },
+        "clawdrive.tasks.historyLimit": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Maximum number of terminal tasks to retain in history."
         }
       }
     }

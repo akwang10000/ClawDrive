@@ -7,20 +7,49 @@ interface SettingsData {
   gatewayPort: number;
   gatewayTls: boolean;
   gatewayToken: string;
+  autoConnect: boolean;
   displayName: string;
+  providerEnabled: boolean;
+  providerCodexPath: string;
+  providerCodexModel: string;
+  tasksDefaultTimeoutMs: number;
+  tasksHistoryLimit: number;
   locale: string;
 }
 
 type SettingsPanelHandlers = {
   onSaveAndConnect: () => Promise<void>;
-  onDiagnose: () => Promise<void>;
 };
 
 let panel: vscode.WebviewPanel | null = null;
 
 export function showSettingsPanel(handlers: SettingsPanelHandlers): void {
+  const render = () => {
+    const cfg = getConfig();
+    const nonce = createNonce();
+    panel!.webview.html = getHtml(
+      {
+        gatewayHost: cfg.gatewayHost,
+        gatewayPort: cfg.gatewayPort,
+        gatewayTls: cfg.gatewayTls,
+        gatewayToken: cfg.gatewayToken,
+        autoConnect: cfg.autoConnect,
+        displayName: cfg.displayName,
+        providerEnabled: cfg.providerEnabled,
+        providerCodexPath: cfg.providerCodexPath,
+        providerCodexModel: cfg.providerCodexModel,
+        tasksDefaultTimeoutMs: cfg.tasksDefaultTimeoutMs,
+        tasksHistoryLimit: cfg.tasksHistoryLimit,
+        locale: getCurrentLocale(),
+      },
+      panel!.webview.cspSource,
+      nonce
+    );
+  };
+
   if (panel) {
     panel.reveal(vscode.ViewColumn.One);
+    render();
     return;
   }
 
@@ -34,23 +63,6 @@ export function showSettingsPanel(handlers: SettingsPanelHandlers): void {
     }
   );
 
-  const render = () => {
-    const cfg = getConfig();
-    const nonce = createNonce();
-    panel!.webview.html = getHtml(
-      {
-        gatewayHost: cfg.gatewayHost,
-        gatewayPort: cfg.gatewayPort,
-        gatewayTls: cfg.gatewayTls,
-        gatewayToken: cfg.gatewayToken,
-        displayName: cfg.displayName,
-        locale: getCurrentLocale(),
-      },
-      panel!.webview.cspSource,
-      nonce
-    );
-  };
-
   render();
 
   panel.webview.onDidReceiveMessage(async (message: unknown) => {
@@ -58,19 +70,12 @@ export function showSettingsPanel(handlers: SettingsPanelHandlers): void {
     const type = typeof msg.type === "string" ? msg.type : "";
 
     try {
-      if (type === "save" || type === "saveAndConnect") {
+      if (type === "saveAndConnect") {
         const data = parseSettingsInput(msg.data);
         await applySettings(data);
+        await handlers.onSaveAndConnect();
         await vscode.window.showInformationMessage(t("notify.settingsSaved"));
-        render();
-        if (type === "saveAndConnect") {
-          await handlers.onSaveAndConnect();
-        }
-        return;
-      }
-
-      if (type === "diagnose") {
-        await handlers.onDiagnose();
+        panel?.dispose();
       }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -93,9 +98,19 @@ function parseSettingsInput(value: unknown): SettingsData {
   const gatewayHost = typeof data.gatewayHost === "string" ? data.gatewayHost.trim() : "";
   const gatewayToken = typeof data.gatewayToken === "string" ? data.gatewayToken.trim() : "";
   const displayName = typeof data.displayName === "string" ? data.displayName.trim() : "";
+  const providerCodexPath = typeof data.providerCodexPath === "string" ? data.providerCodexPath.trim() : "";
+  const providerCodexModel = typeof data.providerCodexModel === "string" ? data.providerCodexModel.trim() : "";
   const gatewayPortRaw =
     typeof data.gatewayPort === "string" || typeof data.gatewayPort === "number"
       ? Number(data.gatewayPort)
+      : Number.NaN;
+  const tasksDefaultTimeoutRaw =
+    typeof data.tasksDefaultTimeoutMs === "string" || typeof data.tasksDefaultTimeoutMs === "number"
+      ? Number(data.tasksDefaultTimeoutMs)
+      : Number.NaN;
+  const tasksHistoryLimitRaw =
+    typeof data.tasksHistoryLimit === "string" || typeof data.tasksHistoryLimit === "number"
+      ? Number(data.tasksHistoryLimit)
       : Number.NaN;
 
   if (!gatewayHost) {
@@ -107,13 +122,25 @@ function parseSettingsInput(value: unknown): SettingsData {
   if (!displayName) {
     throw new Error(t("error.displayNameRequired"));
   }
+  if (!Number.isFinite(tasksDefaultTimeoutRaw) || tasksDefaultTimeoutRaw < 5000) {
+    throw new Error("Task timeout must be at least 5000ms.");
+  }
+  if (!Number.isFinite(tasksHistoryLimitRaw) || tasksHistoryLimitRaw < 1) {
+    throw new Error("Task history limit must be at least 1.");
+  }
 
   return {
     gatewayHost,
     gatewayPort: Math.trunc(gatewayPortRaw),
     gatewayTls: Boolean(data.gatewayTls),
     gatewayToken,
+    autoConnect: Boolean(data.autoConnect),
     displayName,
+    providerEnabled: Boolean(data.providerEnabled),
+    providerCodexPath: providerCodexPath || "codex",
+    providerCodexModel,
+    tasksDefaultTimeoutMs: Math.trunc(tasksDefaultTimeoutRaw),
+    tasksHistoryLimit: Math.trunc(tasksHistoryLimitRaw),
     locale: typeof data.locale === "string" ? data.locale : getCurrentLocale(),
   };
 }
@@ -124,7 +151,13 @@ async function applySettings(data: SettingsData): Promise<void> {
   await cfg.update("gateway.port", data.gatewayPort, vscode.ConfigurationTarget.Global);
   await cfg.update("gateway.tls", data.gatewayTls, vscode.ConfigurationTarget.Global);
   await cfg.update("gateway.token", data.gatewayToken, vscode.ConfigurationTarget.Global);
+  await cfg.update("autoConnect", data.autoConnect, vscode.ConfigurationTarget.Global);
   await cfg.update("displayName", data.displayName, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.enabled", data.providerEnabled, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.codex.path", data.providerCodexPath, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.codex.model", data.providerCodexModel, vscode.ConfigurationTarget.Global);
+  await cfg.update("tasks.defaultTimeoutMs", data.tasksDefaultTimeoutMs, vscode.ConfigurationTarget.Global);
+  await cfg.update("tasks.historyLimit", data.tasksHistoryLimit, vscode.ConfigurationTarget.Global);
 }
 
 function createNonce(): string {
@@ -155,65 +188,45 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
   <style>
     :root {
       color-scheme: light dark;
-      --panel-bg: color-mix(in srgb, var(--vscode-editor-background) 84%, var(--vscode-button-background) 16%);
-      --panel-soft: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%);
+      --panel-bg: linear-gradient(135deg, color-mix(in srgb, var(--vscode-editor-background) 84%, var(--vscode-button-background) 16%), color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-sideBar-background) 6%));
+      --card-bg: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%);
       --line: color-mix(in srgb, var(--vscode-widget-border, #444) 60%, transparent);
-      --accent-soft: color-mix(in srgb, var(--vscode-button-background) 12%, transparent);
-      --warning-soft: color-mix(in srgb, var(--vscode-editorWarning-foreground, #d9a400) 16%, transparent);
+      --note-bg: color-mix(in srgb, var(--vscode-editorInfo-foreground, #3794ff) 10%, transparent);
     }
     body {
       font-family: var(--vscode-font-family);
       color: var(--vscode-foreground);
       background: var(--vscode-editor-background);
       margin: 0;
-      padding: 24px 20px 36px;
+      padding: 24px 20px 32px;
     }
     .wrap {
       max-width: 960px;
       margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+    .hero, .card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--card-bg);
     }
     .hero {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 18px;
-      border: 1px solid var(--line);
-      border-radius: 20px;
       padding: 22px;
-      margin-bottom: 18px;
-      background: linear-gradient(135deg, var(--panel-bg), var(--panel-soft));
+      background: var(--panel-bg);
     }
     h1 {
       margin: 0 0 8px;
-      font-size: 24px;
+      font-size: 26px;
     }
     .sub {
       color: var(--vscode-descriptionForeground);
       line-height: 1.6;
-      max-width: 700px;
-    }
-    .locale {
-      display: inline-flex;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px;
-      gap: 4px;
-      background: var(--panel-soft);
-    }
-    .locale button {
-      border-radius: 999px;
-      padding: 6px 12px;
-      background: transparent;
-      color: var(--vscode-foreground);
-      text-align: center;
-    }
-    .locale button.active {
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
+      max-width: 680px;
     }
     .layout {
       display: grid;
-      grid-template-columns: 1.25fr 0.95fr;
+      grid-template-columns: 1.1fr 0.9fr;
       gap: 16px;
     }
     .stack {
@@ -221,15 +234,12 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
       gap: 16px;
     }
     .card {
-      border: 1px solid var(--line);
-      border-radius: 16px;
       padding: 18px;
-      background: var(--panel-soft);
     }
     .title {
+      margin: 0 0 16px;
       font-size: 16px;
       font-weight: 600;
-      margin-bottom: 16px;
     }
     .field {
       margin-bottom: 14px;
@@ -268,54 +278,30 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
       font-size: 12px;
       line-height: 1.5;
     }
-    .notice {
+    .note {
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 12px;
-      margin-top: 14px;
       line-height: 1.6;
-      font-size: 13px;
-      background: var(--warning-soft);
+      background: var(--note-bg);
+      color: var(--vscode-foreground);
     }
-    .steps {
-      display: grid;
-      gap: 10px;
-    }
-    .step {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px;
-      background: color-mix(in srgb, var(--panel-soft) 90%, var(--accent-soft) 10%);
-    }
-    .step strong {
-      display: block;
-      margin-bottom: 6px;
-    }
-    .bullets {
-      margin: 0;
-      padding-left: 18px;
-      line-height: 1.7;
+    .note + .note {
+      margin-top: 10px;
     }
     .actions {
       display: flex;
-      flex-wrap: wrap;
       gap: 10px;
     }
     button {
       border: none;
       border-radius: 10px;
-      padding: 10px 14px;
+      padding: 11px 14px;
       cursor: pointer;
       font: inherit;
       text-align: left;
-    }
-    .primary {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
-    }
-    .secondary {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
     }
     .error {
       display: none;
@@ -323,12 +309,9 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
       border: 1px solid var(--vscode-errorForeground, #f14c4c);
       border-radius: 10px;
       padding: 10px 12px;
-      margin-bottom: 18px;
     }
     @media (max-width: 860px) {
-      .hero { flex-direction: column; }
       .layout { grid-template-columns: 1fr; }
-      .actions { flex-direction: column; }
       .actions button { width: 100%; }
     }
   </style>
@@ -336,14 +319,8 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
 <body>
   <div class="wrap">
     <div class="hero">
-      <div>
-        <h1 id="title"></h1>
-        <div class="sub" id="subtitle"></div>
-      </div>
-      <div class="locale">
-        <button id="localeZh" type="button">中文</button>
-        <button id="localeEn" type="button">English</button>
-      </div>
+      <h1 id="title"></h1>
+      <div class="sub" id="subtitle"></div>
     </div>
     <div id="error" class="error"></div>
     <div class="layout">
@@ -369,6 +346,11 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
             <label for="gatewayTls" id="gatewayTlsLabel"></label>
           </div>
           <div class="hint" id="gatewayTlsHint"></div>
+          <div class="row">
+            <input id="autoConnect" type="checkbox" ${data.autoConnect ? "checked" : ""}>
+            <label for="autoConnect" id="autoConnectLabel"></label>
+          </div>
+          <div class="hint" id="autoConnectHint"></div>
         </div>
         <div class="card">
           <div class="title" id="nodeTitle"></div>
@@ -377,76 +359,99 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
             <input id="displayName" type="text" value="${escapeHtml(data.displayName)}" placeholder="ClawDrive">
             <div class="hint" id="displayNameHint"></div>
           </div>
-          <div class="notice" id="allowCommandsNotice"></div>
+          <div class="field">
+            <label for="providerCodexPath" id="providerCodexPathLabel"></label>
+            <input id="providerCodexPath" type="text" value="${escapeHtml(data.providerCodexPath)}" placeholder="codex">
+            <div class="hint" id="providerCodexPathHint"></div>
+          </div>
+          <div class="field">
+            <label for="providerCodexModel" id="providerCodexModelLabel"></label>
+            <input id="providerCodexModel" type="text" value="${escapeHtml(data.providerCodexModel)}" placeholder="">
+            <div class="hint" id="providerCodexModelHint"></div>
+          </div>
+          <div class="row">
+            <input id="providerEnabled" type="checkbox" ${data.providerEnabled ? "checked" : ""}>
+            <label for="providerEnabled" id="providerEnabledLabel"></label>
+          </div>
+          <div class="hint" id="providerEnabledHint"></div>
+        </div>
+        <div class="card">
+          <div class="title" id="tasksTitle"></div>
+          <div class="field">
+            <label for="tasksDefaultTimeoutMs" id="tasksDefaultTimeoutLabel"></label>
+            <input id="tasksDefaultTimeoutMs" type="number" value="${data.tasksDefaultTimeoutMs}" placeholder="300000">
+          </div>
+          <div class="field">
+            <label for="tasksHistoryLimit" id="tasksHistoryLimitLabel"></label>
+            <input id="tasksHistoryLimit" type="number" value="${data.tasksHistoryLimit}" placeholder="50">
+          </div>
         </div>
         <div class="actions">
-          <button class="primary" id="save"></button>
-          <button class="secondary" id="saveAndConnect"></button>
-          <button class="secondary" id="diagnose"></button>
+          <button id="saveAndConnect"></button>
         </div>
       </div>
       <div class="stack">
         <div class="card">
-          <div class="title" id="stepsTitle"></div>
-          <div class="steps">
-            <div class="step"><strong id="step1Title"></strong><div id="step1Body"></div></div>
-            <div class="step"><strong id="step2Title"></strong><div id="step2Body"></div></div>
-            <div class="step"><strong id="step3Title"></strong><div id="step3Body"></div></div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="title" id="checklistTitle"></div>
-          <ul class="bullets">
-            <li id="check1"></li>
-            <li id="check2"></li>
-            <li id="check3"></li>
-          </ul>
+          <div class="title" id="notesTitle"></div>
+          <div class="note" id="note1"></div>
+          <div class="note" id="note2"></div>
+          <div class="note" id="note3"></div>
         </div>
       </div>
     </div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const state = Object.assign({ locale: ${JSON.stringify(data.locale)} }, vscode.getState() || {});
+    const state = { locale: ${JSON.stringify(data.locale)} };
     const copy = {
-      title: { "zh-CN": "ClawDrive 设置", "en": "ClawDrive Settings" },
+      title: { "zh-CN": "\\u8bbe\\u7f6e", "en": "Settings" },
       subtitle: {
-        "zh-CN": "先把 Gateway 参数配准，再回到控制台发起连接和诊断。Phase 1 只覆盖真实联调所需的最小配置。",
-        "en": "Set the Gateway connection parameters first, then return to the dashboard to connect and diagnose. Phase 1 only covers the minimum configuration required for real integration."
+        "zh-CN": "\\u53ea\\u4fdd\\u7559\\u8fde\\u63a5 OpenClaw \\u6240\\u9700\\u7684\\u5173\\u952e\\u9879\\u3002\\u4fee\\u6539\\u5b8c\\u76f4\\u63a5\\u70b9\\u201c\\u4fdd\\u5b58\\u5e76\\u8fde\\u63a5\\u201d\\uff0c\\u4e0d\\u518d\\u5206\\u6210\\u591a\\u6b65\\u3002",
+        "en": "Only the essential fields for connecting to OpenClaw remain. Update them and click Save and Connect."
       },
-      gatewayTitle: { "zh-CN": "Gateway 配置", "en": "Gateway Configuration" },
+      gatewayTitle: { "zh-CN": "Gateway", "en": "Gateway" },
       gatewayHostLabel: { "zh-CN": "Host", "en": "Host" },
-      gatewayHostHint: { "zh-CN": "本地 Gateway 通常使用 127.0.0.1。", "en": "A local Gateway usually uses 127.0.0.1." },
-      gatewayPortLabel: { "zh-CN": "端口", "en": "Port" },
+      gatewayHostHint: { "zh-CN": "\\u672c\\u5730 Gateway \\u901a\\u5e38\\u662f 127.0.0.1\\u3002", "en": "A local Gateway usually uses 127.0.0.1." },
+      gatewayPortLabel: { "zh-CN": "\\u7aef\\u53e3", "en": "Port" },
       gatewayTokenLabel: { "zh-CN": "Token", "en": "Token" },
-      gatewayTokenHint: { "zh-CN": "本地 OpenClaw 通常可从 ~/.openclaw/openclaw.json 的 gateway.auth.token 取得。", "en": "For a local OpenClaw setup, read gateway.auth.token from ~/.openclaw/openclaw.json." },
-      gatewayTlsLabel: { "zh-CN": "使用 TLS（wss://）", "en": "Use TLS (wss://)" },
-      gatewayTlsHint: { "zh-CN": "大多数本地 Gateway 使用 ws://127.0.0.1:18789，通常不需要开启 TLS。", "en": "Most local Gateways use ws://127.0.0.1:18789 and usually do not require TLS." },
-      nodeTitle: { "zh-CN": "节点信息", "en": "Node Identity" },
-      displayNameLabel: { "zh-CN": "显示名称", "en": "Display Name" },
-      displayNameHint: { "zh-CN": "这是节点在 Gateway 中显示的名称。", "en": "This is the name advertised by the node to the Gateway." },
-      allowCommandsNotice: { "zh-CN": "如果 Gateway 启用了 gateway.nodes.allowCommands，请确认其中至少包含 vscode.workspace.info，否则会出现“已连接但不可调用”。", "en": "If the Gateway uses gateway.nodes.allowCommands, make sure vscode.workspace.info is included, or the node may be connected but not callable." },
-      save: { "zh-CN": "保存设置", "en": "Save Settings" },
-      saveAndConnect: { "zh-CN": "保存并连接", "en": "Save and Connect" },
-      diagnose: { "zh-CN": "运行诊断", "en": "Run Diagnosis" },
-      stepsTitle: { "zh-CN": "最小接入路径", "en": "Minimal Onboarding Path" },
-      step1Title: { "zh-CN": "1. 配准 Gateway", "en": "1. Configure the Gateway" },
-      step1Body: { "zh-CN": "填写 host、port、token，并确认 TLS 是否关闭。", "en": "Fill in host, port, token, and confirm whether TLS should be off." },
-      step2Title: { "zh-CN": "2. 回到控制台连接", "en": "2. Return to Dashboard and Connect" },
-      step2Body: { "zh-CN": "保存后回到 Dashboard，执行 Connect，确认连接状态变成“已连接”。", "en": "Return to the Dashboard after saving, click Connect, and confirm the state becomes connected." },
-      step3Title: { "zh-CN": "3. 让 OpenClaw 调用", "en": "3. Invoke from OpenClaw" },
-      step3Body: { "zh-CN": "在 OpenClaw 侧触发 vscode.workspace.info，并在 ClawDrive 日志中确认 invoke request / result。", "en": "Trigger vscode.workspace.info from OpenClaw and confirm invoke request / result entries in the ClawDrive log." },
-      checklistTitle: { "zh-CN": "接入前检查", "en": "Pre-flight Checklist" },
-      check1: { "zh-CN": "本地默认地址通常是 127.0.0.1:18789。", "en": "The common local address is 127.0.0.1:18789." },
-      check2: { "zh-CN": "如使用 allowCommands，至少允许 vscode.workspace.info。", "en": "If allowCommands is enabled, make sure vscode.workspace.info is allowed." },
-      check3: { "zh-CN": "若出现 device identity mismatch，说明当前节点身份没有复用到正确历史身份。", "en": "If you see device identity mismatch, the node identity is not reusing the correct historical identity." },
-      unknownError: { "zh-CN": "未知错误", "en": "Unknown error" }
+      gatewayTokenHint: { "zh-CN": "\\u53ef\\u4ece ~/.openclaw/openclaw.json \\u7684 gateway.auth.token \\u8bfb\\u53d6\\u3002", "en": "Read gateway.auth.token from ~/.openclaw/openclaw.json." },
+      gatewayTlsLabel: { "zh-CN": "\\u4f7f\\u7528 TLS\\uff08wss://\\uff09", "en": "Use TLS (wss://)" },
+      gatewayTlsHint: { "zh-CN": "\\u5927\\u591a\\u6570\\u672c\\u5730\\u573a\\u666f\\u4e0d\\u9700\\u8981\\u5f00\\u542f TLS\\u3002", "en": "Most local setups do not need TLS." },
+      autoConnectLabel: { "zh-CN": "\\u542f\\u52a8\\u540e\\u81ea\\u52a8\\u8fde\\u63a5 Gateway", "en": "Auto-connect on startup" },
+      autoConnectHint: { "zh-CN": "\\u5f00\\u542f\\u540e\\uff0cVS Code \\u91cd\\u8f7d\\u6216\\u542f\\u52a8\\u65f6\\u4f1a\\u81ea\\u52a8\\u5c1d\\u8bd5\\u8fde\\u63a5\\u3002", "en": "When enabled, VS Code will try to connect automatically on startup or reload." },
+      nodeTitle: { "zh-CN": "\\u8282\\u70b9\\u4e0e Provider", "en": "Node and Provider" },
+      displayNameLabel: { "zh-CN": "\\u663e\\u793a\\u540d\\u79f0", "en": "Display Name" },
+      displayNameHint: { "zh-CN": "\\u8fd9\\u662f Gateway \\u4e2d\\u770b\\u5230\\u7684\\u8282\\u70b9\\u540d\\u79f0\\u3002", "en": "This is the node name shown in the Gateway." },
+      providerCodexPathLabel: { "zh-CN": "Codex \\u53ef\\u6267\\u884c\\u8def\\u5f84", "en": "Codex Executable" },
+      providerCodexPathHint: { "zh-CN": "\\u53ef\\u4ee5\\u5199 codex\\uff0c\\u4e5f\\u53ef\\u4ee5\\u586b\\u7edd\\u5bf9\\u8def\\u5f84\\u3002", "en": "Use codex or an absolute executable path." },
+      providerCodexModelLabel: { "zh-CN": "Codex \\u6a21\\u578b\\uff08\\u53ef\\u9009\\uff09", "en": "Codex Model (Optional)" },
+      providerCodexModelHint: { "zh-CN": "\\u7559\\u7a7a\\u65f6\\u4f7f\\u7528 Codex CLI \\u9ed8\\u8ba4\\u6a21\\u578b\\u3002", "en": "Leave empty to use the Codex CLI default model." },
+      providerEnabledLabel: { "zh-CN": "\\u542f\\u7528 Codex CLI Provider", "en": "Enable Codex CLI Provider" },
+      providerEnabledHint: { "zh-CN": "\\u9700\\u8981\\u4efb\\u52a1\\u547d\\u4ee4\\u65f6\\u6253\\u5f00\\u5b83\\u3002", "en": "Turn this on before using task commands." },
+      tasksTitle: { "zh-CN": "\\u4efb\\u52a1\\u9ed8\\u8ba4\\u503c", "en": "Task Defaults" },
+      tasksDefaultTimeoutLabel: { "zh-CN": "\\u9ed8\\u8ba4\\u8d85\\u65f6\\uff08ms\\uff09", "en": "Timeout (ms)" },
+      tasksHistoryLimitLabel: { "zh-CN": "\\u5386\\u53f2\\u4fdd\\u7559\\u6570\\u91cf", "en": "History Limit" },
+      saveAndConnect: { "zh-CN": "\\u4fdd\\u5b58\\u5e76\\u8fde\\u63a5", "en": "Save and Connect" },
+      notesTitle: { "zh-CN": "\\u4f7f\\u7528\\u8bf4\\u660e", "en": "Notes" },
+      note1: {
+        "zh-CN": "\\u8fd9\\u4e2a\\u9875\\u9762\\u53ea\\u505a\\u914d\\u7f6e\\u3002\\u8fde\\u63a5\\u3001\\u72b6\\u6001\\u548c\\u8bca\\u65ad\\u56de\\u5230\\u63a7\\u5236\\u53f0\\u770b\\u3002",
+        "en": "This page is now only for configuration. Connection, status, and diagnosis stay in the dashboard."
+      },
+      note2: {
+        "zh-CN": "\\u5982\\u679c provider \\u62a5 ENOENT\\uff0c\\u8bf7\\u76f4\\u63a5\\u586b codex.exe \\u7684\\u7edd\\u5bf9\\u8def\\u5f84\\u3002",
+        "en": "If the provider reports ENOENT, enter the absolute path to codex.exe."
+      },
+      note3: {
+        "zh-CN": "\\u4fdd\\u5b58\\u6210\\u529f\\u540e\\u4f1a\\u7acb\\u5373\\u8fde\\u63a5\\uff0c\\u540c\\u65f6\\u53ef\\u4ee5\\u901a\\u8fc7\\u4e0a\\u9762\\u7684\\u5f00\\u5173\\u8bbe\\u7f6e\\u662f\\u5426\\u5728\\u4e0b\\u6b21\\u542f\\u52a8\\u65f6\\u81ea\\u52a8\\u8fde\\u63a5\\u3002",
+        "en": "After saving, the extension connects immediately. The switch above controls whether startup also auto-connects."
+      },
+      unknownError: { "zh-CN": "\\u672a\\u77e5\\u9519\\u8bef", "en": "Unknown error" }
     };
     function tr(key) {
       const entry = copy[key];
       return entry ? (entry[state.locale] || entry["zh-CN"] || entry["en"] || key) : key;
     }
-    function applyLocale() {
+    function applyCopy() {
       Object.keys(copy).forEach((id) => {
         const el = document.getElementById(id);
         if (el) {
@@ -454,9 +459,6 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
         }
       });
       document.documentElement.lang = state.locale === "en" ? "en" : "zh-CN";
-      document.getElementById("localeZh").classList.toggle("active", state.locale === "zh-CN");
-      document.getElementById("localeEn").classList.toggle("active", state.locale === "en");
-      vscode.setState(state);
     }
     function showError(message) {
       const box = document.getElementById("error");
@@ -469,26 +471,19 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
         gatewayPort: document.getElementById("gatewayPort").value,
         gatewayTls: document.getElementById("gatewayTls").checked,
         gatewayToken: document.getElementById("gatewayToken").value,
+        autoConnect: document.getElementById("autoConnect").checked,
         displayName: document.getElementById("displayName").value,
+        providerEnabled: document.getElementById("providerEnabled").checked,
+        providerCodexPath: document.getElementById("providerCodexPath").value,
+        providerCodexModel: document.getElementById("providerCodexModel").value,
+        tasksDefaultTimeoutMs: document.getElementById("tasksDefaultTimeoutMs").value,
+        tasksHistoryLimit: document.getElementById("tasksHistoryLimit").value,
         locale: state.locale,
       };
     }
-    document.getElementById("save").addEventListener("click", () => {
-      showError("");
-      vscode.postMessage({ type: "save", data: getData() });
-    });
     document.getElementById("saveAndConnect").addEventListener("click", () => {
       showError("");
       vscode.postMessage({ type: "saveAndConnect", data: getData() });
-    });
-    document.getElementById("diagnose").addEventListener("click", () => vscode.postMessage({ type: "diagnose" }));
-    document.getElementById("localeZh").addEventListener("click", () => {
-      state.locale = "zh-CN";
-      applyLocale();
-    });
-    document.getElementById("localeEn").addEventListener("click", () => {
-      state.locale = "en";
-      applyLocale();
     });
     window.addEventListener("message", (event) => {
       const msg = event.data || {};
@@ -496,7 +491,7 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
         showError(msg.error || tr("unknownError"));
       }
     });
-    applyLocale();
+    applyCopy();
   </script>
 </body>
 </html>`;
