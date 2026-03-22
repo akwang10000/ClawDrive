@@ -2,12 +2,13 @@ export type TaskState =
   | "queued"
   | "running"
   | "waiting_decision"
+  | "waiting_approval"
   | "completed"
   | "failed"
   | "cancelled"
   | "interrupted";
 
-export type TaskMode = "analyze" | "plan";
+export type TaskMode = "analyze" | "plan" | "apply";
 
 export type TaskEventType =
   | "queued"
@@ -16,6 +17,9 @@ export type TaskEventType =
   | "progress"
   | "output"
   | "waiting_decision"
+  | "waiting_approval"
+  | "approved"
+  | "rejected"
   | "completed"
   | "failed"
   | "cancelled"
@@ -34,6 +38,26 @@ export interface TaskDecisionRequest {
   recommendedOptionId: string | null;
 }
 
+export interface WriteFileApplyOperation {
+  type: "write_file";
+  path: string;
+  content: string;
+}
+
+export interface ReplaceTextApplyOperation {
+  type: "replace_text";
+  path: string;
+  oldText: string;
+  newText: string;
+}
+
+export type ApplyOperation = WriteFileApplyOperation | ReplaceTextApplyOperation;
+
+export interface TaskApprovalRequest {
+  summary: string;
+  operations: ApplyOperation[];
+}
+
 export interface TaskSnapshot {
   taskId: string;
   title: string;
@@ -46,6 +70,7 @@ export interface TaskSnapshot {
   summary: string;
   lastOutput: string | null;
   decision: TaskDecisionRequest | null;
+  approval: TaskApprovalRequest | null;
   error: string | null;
   errorCode: string | null;
   providerKind: string;
@@ -65,13 +90,14 @@ export interface TaskEventRecord {
 
 export interface TaskResultPayload {
   snapshot: TaskSnapshot;
+  approval: TaskApprovalRequest | null;
   events: TaskEventRecord[];
 }
 
 export interface TaskContinuationCandidate {
   taskId: string;
   title: string;
-  state: Extract<TaskState, "waiting_decision" | "interrupted" | "running" | "queued">;
+  state: Extract<TaskState, "waiting_approval" | "waiting_decision" | "interrupted" | "running" | "queued">;
   updatedAt: string;
   summary: string;
 }
@@ -86,6 +112,7 @@ export interface TaskRespondParams {
   taskId: string;
   optionId?: string;
   message?: string;
+  approval?: "approved" | "rejected";
 }
 
 export interface TaskCancelParams {
@@ -103,6 +130,7 @@ export interface TaskListParams {
 export interface TaskResponseInput {
   optionId?: string;
   message?: string;
+  approval?: "approved" | "rejected";
 }
 
 export interface ProviderStatusInfo {
@@ -118,4 +146,5 @@ export interface TaskRunResult {
   summary: string;
   output?: string | null;
   decision?: TaskDecisionRequest | null;
+  approval?: TaskApprovalRequest | null;
 }

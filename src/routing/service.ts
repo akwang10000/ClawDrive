@@ -12,6 +12,8 @@ import { TaskService } from "../tasks/service";
 import {
   classifyIntent,
   selectHighestPriorityCandidates,
+  shouldApprove,
+  shouldReject,
   shouldUseRecommended,
   type InspectAction,
 } from "./classifier";
@@ -36,6 +38,8 @@ export class AgentRouteService {
         return await this.routeContinue(prompt);
       case "plan":
         return await this.routeTask(prompt, paths, "plan");
+      case "apply":
+        return await this.routeTask(prompt, paths, "apply");
       case "diagnose":
         return await this.routeDiagnose();
       case "blocked":
@@ -47,7 +51,7 @@ export class AgentRouteService {
     }
   }
 
-  private async routeTask(prompt: string, paths: string[], mode: "analyze" | "plan"): Promise<AgentRouteResponse> {
+  private async routeTask(prompt: string, paths: string[], mode: "analyze" | "plan" | "apply"): Promise<AgentRouteResponse> {
     const snapshot = await this.options.taskService.startTask({ prompt, mode, paths });
     return {
       kind: "task",
@@ -55,6 +59,8 @@ export class AgentRouteService {
       message:
         mode === "plan"
           ? text("I started a planning task.", "\u6211\u5df2\u7ecf\u542f\u52a8\u4e86\u4e00\u4e2a\u89c4\u5212\u4efb\u52a1\u3002")
+          : mode === "apply"
+            ? text("I started an apply task.", "\u6211\u5df2\u7ecf\u542f\u52a8\u4e86\u4e00\u4e2a\u4fee\u6539\u6267\u884c\u4efb\u52a1\u3002")
           : text("I started an analysis task.", "\u6211\u5df2\u7ecf\u542f\u52a8\u4e86\u4e00\u4e2a\u5206\u6790\u4efb\u52a1\u3002"),
       data: snapshot,
     };
@@ -70,7 +76,35 @@ export class AgentRouteService {
       };
     }
 
-    const highestPriority = selectHighestPriorityCandidates(candidates);
+    const explicitApproval = shouldApprove(prompt) || shouldReject(prompt);
+    const approvalCandidates = candidates.filter((candidate) => candidate.state === "waiting_approval");
+    const eligibleCandidates = explicitApproval
+      ? approvalCandidates
+      : candidates.filter((candidate) => candidate.state !== "waiting_approval");
+
+    if (explicitApproval && !eligibleCandidates.length) {
+      return {
+        kind: "direct_result",
+        route: "continue",
+        message: text(
+          "There is no recent task waiting for approval.",
+          "\u5f53\u524d\u6ca1\u6709\u6700\u8fd1\u7684\u5f85\u6279\u51c6\u4efb\u52a1\u3002"
+        ),
+      };
+    }
+
+    if (!explicitApproval && !eligibleCandidates.length && approvalCandidates.length) {
+      return {
+        kind: "direct_result",
+        route: "continue",
+        message: text(
+          "The latest task is waiting for explicit approval. Approve or reject it first.",
+          "\u6700\u8fd1\u7684\u4efb\u52a1\u6b63\u5728\u7b49\u5f85\u660e\u786e\u6279\u51c6\uff0c\u8bf7\u5148\u6279\u51c6\u6216\u62d2\u7edd\u3002"
+        ),
+      };
+    }
+
+    const highestPriority = selectHighestPriorityCandidates(eligibleCandidates);
     if (highestPriority.length > 1) {
       return {
         kind: "clarify",
@@ -84,6 +118,27 @@ export class AgentRouteService {
     }
 
     const candidate = highestPriority[0];
+    if (candidate.state === "waiting_approval") {
+      const snapshot = await this.options.taskService.respondToTask({
+        taskId: candidate.taskId,
+        approval: shouldReject(prompt) ? "rejected" : "approved",
+      });
+      return {
+        kind: "task",
+        route: "continue",
+        message: shouldReject(prompt)
+          ? text(
+              "I rejected the latest waiting apply task.",
+              "\u6211\u5df2\u7ecf\u62d2\u7edd\u4e86\u6700\u8fd1\u7684\u5f85\u6279\u51c6\u4fee\u6539\u4efb\u52a1\u3002"
+            )
+          : text(
+              "I approved the latest waiting apply task.",
+              "\u6211\u5df2\u7ecf\u6279\u51c6\u4e86\u6700\u8fd1\u7684\u5f85\u6279\u51c6\u4fee\u6539\u4efb\u52a1\u3002"
+            ),
+        data: snapshot,
+      };
+    }
+
     if (candidate.state === "waiting_decision") {
       const waitingTask = this.options.taskService.getTask(candidate.taskId);
       const useRecommended = shouldUseRecommended(prompt) || Boolean(waitingTask.decision?.recommendedOptionId);
@@ -131,6 +186,7 @@ export class AgentRouteService {
   private async routeDiagnose(): Promise<AgentRouteResponse> {
     const latestFailedTask = this.options.taskService.getLatestTask(["failed"]);
     const latestActiveTask = this.options.taskService.getLatestTask([
+      "waiting_approval",
       "waiting_decision",
       "running",
       "queued",
@@ -194,8 +250,8 @@ export class AgentRouteService {
       kind: "blocked",
       route: "blocked",
       message: text(
-        "Write execution is not available yet. I can help you plan this first.",
-        "\u5199\u5165\u6267\u884c\u8fd8\u6ca1\u6709\u5f00\u653e\uff0c\u6211\u53ef\u4ee5\u5148\u5e2e\u4f60\u505a\u89c4\u5212\u3002"
+        "This write intent is not supported in the current apply slice.",
+        "\u5f53\u524d apply \u91cc\u7a0b\u7891\u8fd8\u4e0d\u652f\u6301\u8fd9\u79cd\u5199\u5165\u610f\u56fe\u3002"
       ),
       data: {
         suggestedMode: "plan",

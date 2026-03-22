@@ -2,38 +2,22 @@
 
 ## Purpose
 
-This document defines the current v1 conversation contract for using OpenClaw with `ClawDrive for VS Code` through natural language instead of raw protocol commands.
+This document defines the current natural-language conversation contract for using OpenClaw with `ClawDrive for VS Code`.
 
-It is written for end users and prompt authors first, not protocol debuggers.
-
-## Goal
-
-Make OpenClaw feel like an IDE assistant:
-
-- users speak in normal language
-- ClawDrive resolves that intent into the right IDE path
-- low-level task details stay hidden unless debugging requires them
-
-Default behavior:
-
-- conversation-first
-- read-first safety
-- plan before write
-- hide task protocol details by default
+It is aimed at operators, prompt authors, and integration work, not protocol debugging first.
 
 ## Public Entry
 
-The current preferred entrypoint for OpenClaw is:
+The preferred entrypoint is:
 
 - `vscode.agent.route`
 
-That entrypoint accepts a plain prompt plus optional focus paths and decides whether to:
+Input:
 
-- answer through direct read-only commands
-- start `analyze`
-- start `plan`
-- continue the most relevant recent task
-- diagnose current connection, callable, provider, or latest-task problems
+- `prompt: string`
+- `paths?: string[]`
+
+The caller should usually provide only the user prompt and optional focus paths.
 
 ## Intent Classes
 
@@ -41,149 +25,175 @@ That entrypoint accepts a plain prompt plus optional focus paths and decides whe
 
 Examples:
 
-- "Read the README and tell me how to install this project."
-- "Show me the files under `src`."
+- "Read the README and summarize installation."
+- "List the files under `src`."
 - "Check current diagnostics."
 
-Recommended route:
+Expected route:
 
-- direct read-only commands
+- synchronous read-only commands
 
-### 2. Analyze And Summarize
+### 2. Analyze And Explain
 
 Examples:
 
-- "Summarize the current architecture."
-- "Explain how the Gateway flow works."
+- "Explain how this repository is structured."
 - "Compare these two modules."
+- "Summarize the architecture."
 
-Recommended route:
+Expected route:
 
-- start with read-only inspection
-- upgrade to task `analyze` mode when the request is broad or multi-step
+- `analyze`
 
 ### 3. Plan And Decide
 
 Examples:
 
 - "Give me two implementation options."
-- "Analyze the next step, but do not modify anything."
-- "I want to choose the direction myself."
+- "Plan first."
+- "Do not change anything yet."
 
-Recommended route:
+Expected route:
 
-- planning mode
-- translate decision requests into plain language
-- avoid raw JSON unless the user asks for it
+- `plan`
 
-### 4. Continue Or Debug
+### 4. Apply With Approval
 
 Examples:
 
-- "Continue the last task."
-- "Use the recommended option and keep going."
-- "Why is the node connected but still not callable?"
+- "Fix this bug."
+- "Implement this behavior."
+- "Modify the README."
 
-Recommended route:
+Expected route:
 
-- attach to the most recent active or waiting task when unambiguous
-- use diagnostics for connection and readiness problems
-- ask for a specific task only when there is real ambiguity
+- `apply`
 
-Current continuation preference order:
+Expected task flow:
+
+- start `apply`
+- return options and enter `waiting_decision`
+- user chooses one option
+- return structured file-operation preview and enter `waiting_approval`
+- user explicitly approves or rejects
+
+### 5. Continue, Approve, Reject, Diagnose
+
+Examples:
+
+- "Continue."
+- "Use the recommended option."
+- "Approve it."
+- "Do not apply it."
+- "Why did the latest task fail?"
+
+Expected route:
+
+- continue the latest relevant task when unambiguous
+- approval and rejection phrases prefer the latest `waiting_approval`
+- status and failure questions use the diagnosis summary path
+
+## Routing Rules
+
+Apply these rules in order:
+
+1. Clear read requests should stay on synchronous read-only commands.
+2. Broad explanation requests should route to `analyze`.
+3. Option, tradeoff, or "do not change anything" requests should route to `plan`.
+4. Explicit fix, implement, or modify requests should route to `apply`.
+5. `continue` should resolve against the latest relevant recent task instead of starting a duplicate.
+6. Explicit approval and rejection phrases should resolve against the latest `waiting_approval`.
+7. Status and failure questions should return a short diagnosis summary instead of raw task protocol unless debugging requires detail.
+
+## Current Continuation Preference Order
+
+Generic continue behavior prefers:
 
 1. latest `waiting_decision`
 2. latest `interrupted`
 3. latest `running`
 4. latest `queued`
 
-If multiple tasks are equally plausible at the top priority, the router should return a short clarification list instead of guessing.
+Explicit approval and rejection behavior prefers:
+
+1. latest `waiting_approval`
+
+If multiple tasks are equally plausible at the same priority, the router should return a short clarification list instead of guessing.
 
 ## Current Write Rule
 
-Broad write execution is not implemented in the current milestone.
+The current write path is no longer planning-only, but it is still tightly scoped.
 
-If the user asks to:
+What happens now:
 
-- fix
-- implement
-- patch
-- edit
-- apply
+- write intent routes to `apply`
+- provider proposes a plan and then a structured approval payload
+- local VS Code execution performs the actual file mutation only after explicit approval
 
-the expected behavior is:
+What is still out of scope:
 
-- do not perform the write directly
-- enter planning behavior or ask for a planning-first step
+- delete
+- rename
+- arbitrary shell or git execution
+- provider-side direct writes
 
-This is a deliberate v1 safety boundary, not a bug.
+## Reply Style
 
-## Routing Rules
-
-Apply these rules in order.
-
-1. If the user asks to read, inspect, check, summarize, or analyze, default to read-only behavior.
-2. If the user asks for options, tradeoffs, or explicitly says not to change anything, force planning behavior.
-3. If the user asks to fix, implement, apply, or commit, do not write immediately. Redirect to planning-first behavior.
-4. If the user says continue, keep going, or use the recommended option, resolve the latest waiting or active task internally before treating it as a new task.
-5. If the user asks for status or progress, summarize the task in natural language instead of returning raw task JSON.
-6. If the user asks why something failed, return a diagnosis-style explanation that prefers the latest relevant task failure.
-7. Only reveal command names, task identifiers, or protocol details when debugging, failure analysis, or ambiguity makes it necessary.
-
-## User-Facing Reply Style
-
-Default reply style:
+Default user-facing replies should be:
 
 - short
-- action-oriented
 - natural
-- no command names by default
+- action-oriented
+- free of raw protocol names unless debugging requires them
 
 Preferred examples:
 
-- "I will first inspect the workspace and read the README."
-- "I found two reasonable directions. You can pick one."
-- "I am continuing with the recommended approach."
-
-Avoid by default:
-
-- "I called a task-start command."
-- "Task `...` is now waiting for decision."
+- "I will inspect the current workspace and summarize the result."
+- "I found two viable directions. You can pick one."
+- "I am waiting for your approval before applying the proposed file changes."
 
 ## Ready-To-Use Templates
 
-### Read Template
+### Read
 
 ```text
-Read the current project README and summarize installation steps and known limits.
+Read the current README and summarize installation steps and current limitations.
 ```
 
-### Analyze Template
+### Analyze
 
 ```text
-Explain how the current Gateway timeout and task orchestration logic works.
+Explain how the current Gateway and task orchestration flow works.
 ```
 
-### Plan Template
+### Plan
 
 ```text
-Analyze the next most valuable change for this repository. Give me two options and do not modify anything yet.
+Give me two implementation options for the next milestone, but do not modify anything yet.
 ```
 
-### Resume Template
+### Apply
 
 ```text
-Continue the last plan task and use the recommended option.
+Fix the README wording issue and wait for my approval before changing files.
 ```
 
-### Debug Template
+### Continue
 
 ```text
-Check why the VS Code node is connected but still cannot be called.
+Continue the last task and use the recommended option.
 ```
 
+### Approve
+
 ```text
-Why did the latest plan task fail?
+Approve the pending file changes.
+```
+
+### Diagnose
+
+```text
+Why did the latest provider task fail?
 ```
 
 ## Acceptance Checklist
@@ -191,8 +201,8 @@ Why did the latest plan task fail?
 This guide is working as intended when:
 
 - users can describe goals in plain language
-- the system chooses inspect, analyze, plan, or continue behavior without asking for raw commands
-- users do not need task IDs for normal flows
-- progress updates are phrased naturally
-- failure explanations name the real blocking layer such as allowlist, provider readiness, CLI compatibility, or task timeout
-- protocol details appear only in debugging or failure explanations
+- the system chooses inspect, analyze, plan, apply, continue, or diagnose behavior without raw protocol instructions
+- users do not need task IDs for common flows
+- write execution requires explicit approval
+- progress and results are phrased naturally
+- failure explanations identify the real blocking layer such as allowlist, provider readiness, CLI compatibility, or transport/runtime friction

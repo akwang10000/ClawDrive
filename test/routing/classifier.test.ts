@@ -10,13 +10,18 @@ test("classifier routes plan prompts", () => {
   assert.deepEqual(classifyIntent("给我两个方案，先别改", []), { type: "plan" });
 });
 
+test("classifier routes apply prompts", () => {
+  assert.deepEqual(classifyIntent("修这个 bug", []), { type: "apply" });
+});
+
 test("classifier routes continue prompts and recommended follow-up", () => {
   assert.deepEqual(classifyIntent("继续", []), { type: "continue" });
+  assert.deepEqual(classifyIntent("批准执行", []), { type: "continue" });
   assert.equal(shouldUseRecommended("用推荐方案"), true);
 });
 
-test("classifier blocks write intents", () => {
-  assert.deepEqual(classifyIntent("修这个 bug", []), { type: "blocked" });
+test("classifier blocks unsupported destructive intents", () => {
+  assert.deepEqual(classifyIntent("删除这个文件", []), { type: "blocked" });
 });
 
 test("classifier maps direct inspect prompts conservatively", () => {

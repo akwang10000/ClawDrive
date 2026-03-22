@@ -1,5 +1,5 @@
 import { getCurrentLocale } from "../i18n";
-import type { TaskDecisionOption, TaskMode, TaskState } from "./types";
+import type { TaskApprovalRequest, TaskDecisionOption, TaskMode, TaskState } from "./types";
 
 function isEnglish(): boolean {
   return getCurrentLocale() === "en";
@@ -71,9 +71,21 @@ export function providerStatusError(detail: string): { label: string; message: s
 
 export function taskModeLabel(mode: TaskMode): string {
   if (isEnglish()) {
-    return mode === "plan" ? "Plan" : "Analyze";
+    if (mode === "plan") {
+      return "Plan";
+    }
+    if (mode === "apply") {
+      return "Apply";
+    }
+    return "Analyze";
   }
-  return mode === "plan" ? "\u89C4\u5212" : "\u5206\u6790";
+  if (mode === "plan") {
+    return "\u89C4\u5212";
+  }
+  if (mode === "apply") {
+    return "\u6267\u884C\u4fee\u6539";
+  }
+  return "\u5206\u6790";
 }
 
 export function taskStateLabel(state: TaskState): string {
@@ -81,6 +93,7 @@ export function taskStateLabel(state: TaskState): string {
     queued: "\u6392\u961F\u4E2D",
     running: "\u8FD0\u884C\u4E2D",
     waiting_decision: "\u7B49\u5F85\u51B3\u7B56",
+    waiting_approval: "\u7B49\u5F85\u6279\u51C6",
     completed: "\u5DF2\u5B8C\u6210",
     failed: "\u5DF2\u5931\u8D25",
     cancelled: "\u5DF2\u53D6\u6D88",
@@ -90,6 +103,7 @@ export function taskStateLabel(state: TaskState): string {
     queued: "Queued",
     running: "Running",
     waiting_decision: "Waiting",
+    waiting_approval: "Awaiting Approval",
     completed: "Completed",
     failed: "Failed",
     cancelled: "Cancelled",
@@ -116,6 +130,12 @@ export function taskWaitingSummary(optionCount: number): string {
     : `\u6B63\u5728\u7B49\u5F85\u4F60\u4ECE ${optionCount} \u4E2A\u9009\u9879\u4E2D\u505A\u51FA\u51B3\u5B9A\u3002`;
 }
 
+export function taskWaitingApprovalSummary(operationCount: number): string {
+  return isEnglish()
+    ? `Waiting for approval to apply ${operationCount} operation(s).`
+    : `\u6B63\u5728\u7B49\u5F85\u4F60\u6279\u51C6 ${operationCount} \u4E2A\u4FEE\u6539\u64CD\u4F5C\u3002`;
+}
+
 export function taskCompletedSummary(): string {
   return isEnglish() ? "Task completed." : "\u4EFB\u52A1\u5DF2\u5B8C\u6210\u3002";
 }
@@ -128,6 +148,10 @@ export function taskInterruptedSummary(): string {
 
 export function taskCancelledSummary(): string {
   return isEnglish() ? "Task cancelled." : "\u4EFB\u52A1\u5DF2\u53D6\u6D88\u3002";
+}
+
+export function taskRejectedSummary(): string {
+  return isEnglish() ? "Apply request rejected." : "\u4F60\u5DF2\u62D2\u7EDD\u6B64\u6B21\u4FEE\u6539\u6267\u884C\u3002";
 }
 
 export function taskFailedSummary(message: string): string {
@@ -150,8 +174,18 @@ export function taskResumePrompt(option?: TaskDecisionOption, message?: string):
 
 export function taskWriteBlockedMessage(): string {
   return isEnglish()
-    ? "Write-capable apply tasks are not implemented yet. Use planning first."
-    : "\u5199\u5165\u6267\u884C\u578B apply \u4EFB\u52A1\u5F53\u524D\u8FD8\u6CA1\u6709\u5B9E\u73B0\uff0C\u8BF7\u5148\u8D70 planning\u3002";
+    ? "This request needs apply mode or an explicit planning-first prompt."
+    : "\u8FD9\u7C7B\u8BF7\u6C42\u9700\u8981\u8FDB\u5165 apply \u6A21\u5F0F\uff0C\u6216\u8005\u5148\u660E\u786E\u8981\u6C42\u53EA\u51FA\u89C4\u5212\u65B9\u6848\u3002";
+}
+
+export function taskApprovalTitle(): string {
+  return isEnglish() ? "Approval:" : "\u5F85\u6279\u51C6\u4FEE\u6539\uff1A";
+}
+
+export function taskApprovalSummary(approval: TaskApprovalRequest): string {
+  return isEnglish()
+    ? `${approval.summary} (${approval.operations.length} operation(s))`
+    : `${approval.summary}\uFF08${approval.operations.length} \u4E2A\u64CD\u4F5C\uFF09`;
 }
 
 export function taskResultTitle(title: string, state: TaskState): string {

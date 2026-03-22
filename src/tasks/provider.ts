@@ -1,4 +1,4 @@
-import type { TaskMode, TaskResponseInput, TaskRunResult } from "./types";
+import type { TaskApprovalRequest, TaskDecisionRequest, TaskMode, TaskResponseInput, TaskRunResult, TaskState } from "./types";
 
 export interface ProviderProbeResult {
   ready: boolean;
@@ -13,6 +13,9 @@ export interface ProviderRunContext {
   paths: string[];
   workspacePath: string | null;
   sessionId?: string | null;
+  resumeFromState?: TaskState | null;
+  decision?: TaskDecisionRequest | null;
+  approval?: TaskApprovalRequest | null;
 }
 
 export interface ProviderRunCallbacks {

@@ -7,7 +7,7 @@ export interface AgentRouteRequest {
 
 export type AgentRouteKind = "direct_result" | "task" | "task_result" | "blocked" | "clarify";
 
-export type AgentRouteTarget = "inspect" | "analyze" | "plan" | "continue" | "diagnose" | "blocked";
+export type AgentRouteTarget = "inspect" | "analyze" | "plan" | "apply" | "continue" | "diagnose" | "blocked";
 
 export interface AgentRouteTaskChoice {
   taskId: string;
@@ -26,7 +26,7 @@ export type AgentRouteResponse =
     }
   | {
       kind: "task";
-      route: "analyze" | "plan" | "continue";
+      route: "analyze" | "plan" | "apply" | "continue";
       message: string;
       data: TaskSnapshot;
     }

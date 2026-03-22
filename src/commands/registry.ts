@@ -179,7 +179,7 @@ function requireRouteHandler(): (params: AgentRouteRequest) => Promise<AgentRout
   return routeHandler;
 }
 
-function parseTaskStartParams(params: unknown): { prompt: string; mode: "analyze" | "plan"; paths?: string[] } {
+function parseTaskStartParams(params: unknown): { prompt: string; mode: "analyze" | "plan" | "apply"; paths?: string[] } {
   if (!params || typeof params !== "object") {
     throw mapUnknownCommandError(new Error("Expected an object with prompt and mode."));
   }
@@ -190,8 +190,8 @@ function parseTaskStartParams(params: unknown): { prompt: string; mode: "analyze
   if (!prompt) {
     throw mapUnknownCommandError(new Error("prompt must be a non-empty string."));
   }
-  if (mode !== "analyze" && mode !== "plan") {
-    throw mapUnknownCommandError(new Error("mode must be analyze or plan."));
+  if (mode !== "analyze" && mode !== "plan" && mode !== "apply") {
+    throw mapUnknownCommandError(new Error("mode must be analyze, plan, or apply."));
   }
   return { prompt, mode, paths: rawPaths };
 }
@@ -238,7 +238,7 @@ function parseTaskListParams(params: unknown): { limit?: number } {
   return { limit: Math.trunc(limit) };
 }
 
-function parseTaskRespondParams(params: unknown): { taskId: string; optionId?: string; message?: string } {
+function parseTaskRespondParams(params: unknown): { taskId: string; optionId?: string; message?: string; approval?: "approved" | "rejected" } {
   if (!params || typeof params !== "object") {
     throw mapUnknownCommandError(new Error("Expected an object with taskId and response fields."));
   }
@@ -246,11 +246,12 @@ function parseTaskRespondParams(params: unknown): { taskId: string; optionId?: s
   const taskId = typeof value.taskId === "string" ? value.taskId.trim() : "";
   const optionId = typeof value.optionId === "string" ? value.optionId.trim() : undefined;
   const message = typeof value.message === "string" ? value.message.trim() : undefined;
+  const approval = value.approval === "approved" || value.approval === "rejected" ? value.approval : undefined;
   if (!taskId) {
     throw mapUnknownCommandError(new Error("taskId must be a non-empty string."));
   }
-  if (!optionId && !message) {
-    throw mapUnknownCommandError(new Error("respond requires optionId or message."));
+  if (!optionId && !message && !approval) {
+    throw mapUnknownCommandError(new Error("respond requires optionId, message, or approval."));
   }
-  return { taskId, optionId, message };
+  return { taskId, optionId, message, approval };
 }

@@ -83,6 +83,22 @@ export function classifyCodexCliFailure(error: unknown): CodexCliFailure {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
 
+  if (normalized.includes("transport channel closed") || normalized.includes("unexpectedcontenttype")) {
+    return {
+      code: "PROVIDER_TRANSPORT_FAILED",
+      message:
+        "Codex transport failed while talking to a downstream service. Check external MCP or model-provider compatibility.",
+    };
+  }
+
+  if (normalized.includes("blocked by policy") || normalized.includes("rejected: blocked by policy")) {
+    return {
+      code: "PROVIDER_COMMAND_POLICY_BLOCKED",
+      message:
+        "Codex tried to run a shell probe, but its execution policy blocked the command. Retry with a narrower prompt or continue without shell exploration.",
+    };
+  }
+
   if (
     normalized.includes("enoent") ||
     normalized.includes("not found") ||
@@ -131,6 +147,32 @@ export function classifyCodexCliFailure(error: unknown): CodexCliFailure {
     code: "PROVIDER_EXECUTION_FAILED",
     message: message.trim() || "Codex execution failed.",
   };
+}
+
+export function sanitizeCodexConfig(raw: string): string {
+  const lines = raw.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const sanitized: string[] = [];
+  let skippingMcpSection = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isHeader = /^\[.*\]$/.test(trimmed);
+
+    if (isHeader) {
+      skippingMcpSection = /^\[\[?\s*mcp_servers(?:[.\]])/i.test(trimmed);
+      if (skippingMcpSection) {
+        continue;
+      }
+    }
+
+    if (skippingMcpSection) {
+      continue;
+    }
+
+    sanitized.push(line);
+  }
+
+  return sanitized.join("\n").trimEnd() + "\n";
 }
 
 function buildBaseArgs(workspacePath: string | null, model: string | undefined, capabilities: CodexCliCapabilities): string[] {

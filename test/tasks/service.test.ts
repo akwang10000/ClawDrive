@@ -149,6 +149,109 @@ test("TaskService timeout is marked differently from cancellation", async () => 
   assert.equal(failed.errorCode, "TASK_TIMEOUT");
 });
 
+test("TaskService drives apply through waiting_decision -> waiting_approval -> completed", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-apply");
+  setWorkspaceRoot(rootPath);
+
+  await import("fs/promises").then((fs) => fs.writeFile(`${rootPath}\\README.md`, "before", "utf8"));
+
+  const provider = new FakeProvider({
+    async startTask() {
+      return {
+        summary: "Choose an apply plan.",
+        output: "option_a: Update README",
+        decision: {
+          summary: "Choose an apply plan.",
+          recommendedOptionId: "option_a",
+          options: [{ id: "option_a", title: "Update README", summary: "Replace README text.", recommended: true }],
+        },
+      };
+    },
+    async resumeTask(_context, response) {
+      assert.equal(response.optionId, "option_a");
+      return {
+        summary: "Ready to apply README update.",
+        output: "write_file README.md",
+        approval: {
+          summary: "Update README.md content.",
+          operations: [{ type: "write_file", path: "README.md", content: "after" }],
+        },
+      };
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "fix the README", mode: "apply" });
+  const waitingDecision = await waitForTaskState(service, queued.taskId, "waiting_decision");
+  await service.respondToTask({ taskId: waitingDecision.taskId, optionId: "option_a" });
+  const waitingApproval = await waitForTaskState(service, waitingDecision.taskId, "waiting_approval");
+  assert.equal(waitingApproval.approval?.operations.length, 1);
+
+  await service.respondToTask({ taskId: waitingApproval.taskId, approval: "approved" });
+  const completed = await waitForTaskState(service, waitingApproval.taskId, "completed");
+  assert.equal(completed.errorCode, null);
+  assert.match(completed.summary, /Applied 1 operation/);
+
+  const fs = await import("fs/promises");
+  assert.equal(await fs.readFile(`${rootPath}\\README.md`, "utf8"), "after");
+});
+
+test("TaskService rejects apply approval without modifying files", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-reject");
+  setWorkspaceRoot(rootPath);
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () =>
+      new FakeProvider({
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      }),
+  });
+  await service.initialize();
+
+  const storage = new TaskStorage(rootPath, 20);
+  await storage.initialize();
+  await storage.saveSnapshot(
+    makeSnapshot({
+      taskId: "apply-waiting",
+      mode: "apply",
+      state: "waiting_approval",
+      approval: {
+        summary: "Would update README.md",
+        operations: [{ type: "write_file", path: "README.md", content: "after" }],
+      },
+    })
+  );
+
+  const restored = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () =>
+      new FakeProvider({
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      }),
+  });
+  await restored.initialize();
+
+  const rejected = await restored.respondToTask({ taskId: "apply-waiting", approval: "rejected" });
+  assert.equal(rejected.state, "cancelled");
+  assert.equal(rejected.summary, "Apply request rejected.");
+});
+
 async function waitForTaskState(
   service: TaskService,
   taskId: string,
@@ -179,6 +282,7 @@ function makeSnapshot(overrides: Partial<TaskSnapshot>): TaskSnapshot {
     summary: "Queued",
     lastOutput: null,
     decision: null,
+    approval: null,
     error: null,
     errorCode: null,
     providerKind: "fake",

@@ -3,6 +3,7 @@ import type { TaskContinuationCandidate } from "../tasks/types";
 export type RouteIntent =
   | { type: "continue" }
   | { type: "plan" }
+  | { type: "apply" }
   | { type: "diagnose" }
   | { type: "blocked" }
   | { type: "inspect"; action: InspectAction }
@@ -16,7 +17,7 @@ export type InspectAction =
   | { type: "directory"; path: string };
 
 export function classifyIntent(prompt: string, paths: string[]): RouteIntent {
-  if (matchesAny(prompt, continuePatterns)) {
+  if (matchesAny(prompt, continuePatterns) || matchesAny(prompt, approvalPatterns) || matchesAny(prompt, rejectionPatterns)) {
     return { type: "continue" };
   }
   if (matchesAny(prompt, planPatterns)) {
@@ -25,8 +26,11 @@ export function classifyIntent(prompt: string, paths: string[]): RouteIntent {
   if (matchesAny(prompt, diagnosePatterns)) {
     return { type: "diagnose" };
   }
-  if (matchesAny(prompt, blockedWritePatterns)) {
+  if (matchesAny(prompt, blockedPatterns)) {
     return { type: "blocked" };
+  }
+  if (matchesAny(prompt, applyPatterns)) {
+    return { type: "apply" };
   }
 
   const inspectAction = classifyInspectAction(prompt, paths);
@@ -39,6 +43,14 @@ export function classifyIntent(prompt: string, paths: string[]): RouteIntent {
 
 export function shouldUseRecommended(prompt: string): boolean {
   return matchesAny(prompt, recommendedPatterns);
+}
+
+export function shouldApprove(prompt: string): boolean {
+  return matchesAny(prompt, approvalPatterns);
+}
+
+export function shouldReject(prompt: string): boolean {
+  return matchesAny(prompt, rejectionPatterns);
 }
 
 export function selectHighestPriorityCandidates(candidates: TaskContinuationCandidate[]): TaskContinuationCandidate[] {
@@ -72,16 +84,13 @@ function matchesAny(prompt: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(prompt));
 }
 
-const continuePatterns = [
-  /\b(continue|keep going|resume)\b/i,
-  /\buse the recommended (option|one|plan)\b/i,
-  /继续/,
-  /接着/,
-  /用推荐方案/,
-  /按推荐方案/,
-];
+const continuePatterns = [/\b(continue|keep going|resume)\b/i, /\buse the recommended (option|one|plan)\b/i, /继续/, /接着/, /用推荐方案/, /按推荐方案/];
 
 const recommendedPatterns = [/\brecommended\b/i, /推荐/];
+
+const approvalPatterns = [/\b(approve|approved|apply it|go ahead|start applying|execute the changes)\b/i, /批准/, /同意修改/, /执行修改/, /开始改/, /开始执行/];
+
+const rejectionPatterns = [/\b(reject|cancel the apply|do not apply|don't apply|stop the apply)\b/i, /不要改了/, /拒绝/, /别改了/, /取消修改/];
 
 const planPatterns = [
   /\b(plan first|give me (two|2|three|3|several)?\s*options?|trade-?offs?|let me decide|do not modify|don't modify|no changes yet)\b/i,
@@ -111,27 +120,11 @@ const diagnosePatterns = [
   /现在什么状态/,
 ];
 
-const blockedWritePatterns = [
-  /\b(fix|implement|patch|modify|edit|write|change|commit|apply|update)\b/i,
-  /修复/,
-  /修这个/,
-  /实现/,
-  /修改/,
-  /编辑/,
-  /写入/,
-  /提交/,
-  /应用/,
-  /更新代码/,
-];
+const blockedPatterns = [/\b(delete|remove|rename)\b/i, /删除/, /移除/, /重命名/];
 
-const workspacePatterns = [
-  /\b(workspace info|current workspace|which workspace|project root|repo root|root path)\b/i,
-  /当前工作区/,
-  /工作区信息/,
-  /项目根目录/,
-  /仓库根目录/,
-  /根路径/,
-];
+const applyPatterns = [/\b(fix|implement|patch|modify|edit|write|change|apply|update)\b/i, /修复/, /修这个/, /实现/, /修改/, /编辑/, /写入/, /应用/, /更新代码/];
+
+const workspacePatterns = [/\b(workspace info|current workspace|which workspace|project root|repo root|root path)\b/i, /当前工作区/, /工作区信息/, /项目根目录/, /仓库根目录/, /根路径/];
 
 const editorPatterns = [/\b(active editor|current editor|current file|active file)\b/i, /当前编辑器/, /活动编辑器/, /当前文件/];
 

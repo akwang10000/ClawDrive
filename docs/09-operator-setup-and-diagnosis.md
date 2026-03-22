@@ -6,23 +6,24 @@ This product fails in practice if operators cannot tell:
 
 - whether the node is connected
 - whether commands are callable
-- whether the selected provider is actually usable
-- whether a task is queued, running, waiting, or failed
+- whether the selected provider is usable
+- whether a task is queued, waiting, running, or failed
+- whether a provider warning is fatal or only degraded noise
 
-Setup and diagnosis are part of the core product surface, not optional tooling.
+Setup and diagnosis are part of the product surface, not optional tooling.
 
 ## State Layers
 
-The current rewrite distinguishes these states:
+The current rewrite distinguishes:
 
 - `connected`: the VS Code extension has an accepted Gateway session
-- `callable`: the node is advertising a usable direct command surface
-- `provider ready`: the selected provider is installed, enabled, and locally runnable
-- task state: queued, running, waiting, completed, failed, cancelled, or interrupted
+- `callable`: the Gateway allowlist and node command surface permit invocation
+- `provider ready`: the configured provider is enabled and locally runnable
+- task state: `queued`, `running`, `waiting_decision`, `waiting_approval`, `completed`, `failed`, `cancelled`, `interrupted`
 
-These states should not be collapsed into one generic "connected" label.
+These should not be collapsed into one generic "connected" label.
 
-## Current Operator Surfaces
+## Operator Surfaces
 
 The current repository includes:
 
@@ -32,44 +33,27 @@ The current repository includes:
 - `ClawDrive: Disconnect`
 - `ClawDrive: Show Status`
 - `ClawDrive: Diagnose Connection`
-- `ClawDrive Activity` view
+- `ClawDrive Activity`
 - `ClawDrive` output log
 
-The dashboard is intentionally simplified to the essential actions:
+The dashboard intentionally keeps only the most necessary actions:
 
 - connect or reconnect
 - open settings
 - run diagnosis
 
-Advanced actions remain in the command palette.
-
-## First-Run Setup Goals
-
-The first-run path should make these items explicit:
-
-- Gateway host and port
-- token or other required auth input
-- Gateway TLS on or off
-- whether startup should auto-connect
-- display name and node identity
-- provider enablement
-- provider binary path or discovery
-- model selection when applicable
-
-These fields are currently exposed through the VS Code settings UI and the `ClawDrive: Settings` panel.
-
-## Current Recommended Setup Flow
+## Recommended Setup Flow
 
 1. Open `ClawDrive: Settings`.
-2. Fill in Gateway host, port, token, and TLS choice.
-3. Leave auto-connect enabled unless you explicitly want manual connection.
-4. Configure provider settings if you want task commands to work.
-5. Save settings. The extension connects immediately.
-6. Open `ClawDrive: Dashboard` only if you need to verify connection or run diagnosis.
+2. Configure Gateway host, port, token, and TLS.
+3. Leave auto-connect enabled unless manual connection is required.
+4. Configure provider settings if you want long tasks or route-backed analysis/planning/apply.
+5. Save settings and let the extension connect.
+6. Use `Dashboard`, `Activity`, or `Diagnose Connection` only when you need verification or recovery.
 
-If the Gateway uses `gateway.nodes.allowCommands`, keep the allowlist aligned with the extension's advertised command surface.
+If the Gateway uses `gateway.nodes.allowCommands`, keep the allowlist aligned with the extension command surface.
 
-For the current milestone, operators should explicitly allow:
+Minimum recommended allowlist:
 
 - `vscode.agent.route`
 - `vscode.workspace.info`
@@ -83,13 +67,6 @@ For the current milestone, operators should explicitly allow:
 - `vscode.agent.task.respond`
 - `vscode.agent.task.cancel`
 - `vscode.agent.task.result`
-
-Otherwise the common failure mode is:
-
-- connected
-- provider ready
-- advertised commands visible
-- callable still blocked by the Gateway allowlist
 
 ## Common Failure Matrix
 
@@ -128,22 +105,23 @@ Symptoms:
 
 Recommended action:
 
-- verify the node is using a compatible existing device identity
+- verify the node is using a compatible existing identity
 - verify `deviceId` is derived from the signing public key
-- avoid silently generating a fresh unrelated identity when the Gateway already knows an older one
+- avoid silently rotating to a fresh identity when the Gateway already knows the old one
 
-### Command Surface Empty Or Incomplete
+### Command Surface Blocked By Allowlist
 
 Symptoms:
 
 - node appears connected
-- remote side cannot call expected read-only commands
+- advertised commands are visible
+- `callable` is still blocked
 
 Recommended action:
 
 - verify the Gateway allowlist
 - verify exact command-name matching
-- compare the extension's advertised command inventory with the Gateway-visible one
+- compare the extension's advertised inventory with the allowlist
 
 ### Provider Not Ready
 
@@ -155,42 +133,39 @@ Symptoms:
 Recommended action:
 
 - verify the provider is enabled
-- verify the provider binary or executable path
-- verify the CLI can be launched locally
+- verify executable discovery
+- verify the Codex CLI can be launched locally
 - verify the selected model or runtime is valid
 
 ### Provider Runtime Friction
 
 Symptoms:
 
-- tasks start but fail during execution
-- errors mention missing executable, incompatible CLI arguments, or blocked shell behavior
+- tasks start but fail or degrade during execution
+- errors mention missing executable, unsupported arguments, blocked shell probing, or transport errors
 
 Recommended action:
 
 - verify the installed Codex CLI version
 - verify executable discovery and argument compatibility
-- verify read-only analysis is not assuming unavailable tools such as `rg`
+- verify read-only analysis does not depend on unavailable tools
+- verify provider execution is isolated from unrelated external MCP configuration
 
-## Diagnosis Rules
+## Current Diagnosis Rules
 
-The operator experience should support these questions directly:
+The operator experience should answer these questions directly:
 
 - why is the node disconnected
 - why is the node connected but not callable
 - why are task commands available but provider execution failing
 - what is the current task waiting on
+- whether the latest provider warning was fatal, degraded, or non-fatal noise
 
-The system should answer them with short guidance first and deeper technical detail second.
+The system should answer with short guidance first and deeper technical detail second.
 
-The current hardening milestone also makes diagnosis reusable across surfaces:
+## Current Diagnosis Snapshot
 
-- `vscode.agent.route` can answer status and failure questions synchronously
-- `ClawDrive: Diagnose Connection` uses the same structured status snapshot
-- `ClawDrive: Show Status` now reflects the same connection and provider state labels
-- task failures can carry a stable error code plus human-readable summary
-
-Current diagnosis summary fields are:
+Current diagnosis and status summaries are built around:
 
 - `connected`
 - `callable`
@@ -199,23 +174,31 @@ Current diagnosis summary fields are:
 - latest failure summary
 - actionable next hint
 
+Recent hardening also keeps provider execution more isolated by:
+
+- using a ClawDrive-specific `CODEX_HOME` for provider runs
+- preserving local auth and model configuration
+- stripping unrelated external MCP server configuration from provider execution
+
+That isolation is intended to reduce downstream transport issues caused by unrelated personal Codex setup.
+
+## Warning Reality
+
+Provider execution may still emit helper, sandbox, or transport-layer warnings.
+
+Current product expectation:
+
+- the main user flow should succeed when the warning is non-fatal
+- diagnosis should preserve the warning as evidence
+- non-fatal stderr noise should not be treated as a hard user-facing failure by default
+
 ## Verified Current Flow
 
 The currently verified operator flow is:
 
 1. Save Gateway and provider settings.
-2. Let the extension auto-connect, or trigger connect manually.
+2. Let the extension auto-connect, or connect manually.
 3. Confirm `connected`, `callable`, and `provider ready`.
 4. Trigger a direct read command such as `vscode.workspace.info`.
-5. Trigger a long task through `vscode.agent.task.start`.
-6. Confirm task progress or result from OpenClaw, the activity view, or the output log.
-
-## Hardening Notes
-
-Recent stability work specifically covers:
-
-- `running` tasks restore as `interrupted` after restart
-- `waiting_decision` tasks remain resumable after restart
-- timeout, cancellation, and provider execution failure stay distinct
-- provider CLI incompatibility is translated into stable task failure codes
-- OpenClaw diagnosis requests can explain provider path, compatibility, and allowlist problems without scraping raw logs
+5. Trigger a routed request such as `vscode.agent.route`.
+6. Observe task progress or result from OpenClaw, the activity view, or the output log.

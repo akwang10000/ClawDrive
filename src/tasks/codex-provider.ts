@@ -11,11 +11,13 @@ import {
   buildCodexResumeArgs,
   classifyCodexCliFailure,
   detectCodexCliCapabilities,
+  sanitizeCodexConfig,
   validateCodexExecutablePath,
   type CodexCliCapabilities,
 } from "./codex-cli";
 import type { ProviderProbeResult, ProviderRunCallbacks, ProviderRunContext, TaskProvider } from "./provider";
-import type { TaskDecisionRequest, TaskResponseInput, TaskRunResult } from "./types";
+import { commandFailure as commandFailureTypeGuard } from "../guards/errors";
+import type { ApplyOperation, TaskApprovalRequest, TaskDecisionRequest, TaskResponseInput, TaskRunResult } from "./types";
 
 interface AnalyzeSchemaResponse {
   summary: string;
@@ -32,9 +34,41 @@ interface PlanSchemaResponse {
   }>;
 }
 
+interface ApplyDecisionSchemaResponse extends PlanSchemaResponse {
+  stage: "decision";
+}
+
+interface ApplyApprovalSchemaResponse {
+  stage: "approval";
+  summary: string;
+  operations: Array<
+    | {
+        type: "write_file";
+        path: string;
+        content: string;
+      }
+    | {
+        type: "replace_text";
+        path: string;
+        oldText: string;
+        newText: string;
+      }
+  >;
+}
+
+interface ApplyCompletedSchemaResponse {
+  stage: "completed";
+  summary: string;
+  details: string;
+}
+
+type ApplySchemaResponse = ApplyDecisionSchemaResponse | ApplyApprovalSchemaResponse | ApplyCompletedSchemaResponse;
+
 export class CodexCliProvider implements TaskProvider {
   readonly kind = "codex";
   private readonly capabilityCache = new Map<string, CodexCliCapabilities>();
+  private readonly isolatedCodexHome = path.join(os.homedir(), ".clawdrive", "codex-home");
+  private hasLoggedEnvironment = false;
 
   constructor(private readonly config: ClawDriveConfig) {}
 
@@ -59,16 +93,27 @@ export class CodexCliProvider implements TaskProvider {
 
   async startTask(context: ProviderRunContext, callbacks: ProviderRunCallbacks, signal: AbortSignal): Promise<TaskRunResult> {
     const executable = await this.resolveExecutable();
+    const env = await this.prepareCodexEnvironment();
     const capabilities = await this.getCapabilities(executable);
     const schemaPath =
-      capabilities.supportsOutputSchema && context.mode ? await this.writeSchema(context.mode === "plan" ? this.planSchema() : this.analyzeSchema()) : null;
+      capabilities.supportsOutputSchema && context.mode
+        ? await this.writeSchema(
+            context.mode === "plan"
+              ? this.planSchema()
+              : context.mode === "apply"
+                ? this.applyDecisionSchema()
+                : this.analyzeSchema()
+          )
+        : null;
     const outputPath =
       !schemaPath && capabilities.supportsOutputLastMessage ? this.createTempFilePath("clawdrive-output", "json") : null;
     try {
       const prompt =
         context.mode === "plan"
           ? this.buildPlanPrompt(context, !schemaPath)
-          : this.buildAnalyzePrompt(context, !schemaPath);
+          : context.mode === "apply"
+            ? this.buildApplyDecisionPrompt(context, !schemaPath)
+            : this.buildAnalyzePrompt(context, !schemaPath);
       const raw = await this.runCommand(
         executable,
         buildCodexExecArgs({
@@ -82,10 +127,17 @@ export class CodexCliProvider implements TaskProvider {
         context.workspacePath,
         signal,
         true,
-        callbacks
+        callbacks,
+        env
       );
       const finalMessage = outputPath ? await this.readOutputMessage(outputPath) : null;
-      return context.mode === "plan" ? this.parsePlanResult(raw, finalMessage) : this.parseAnalyzeResult(raw, finalMessage);
+      if (context.mode === "plan") {
+        return this.parsePlanResult(raw, finalMessage);
+      }
+      if (context.mode === "apply") {
+        return this.parseApplyResult(raw, finalMessage);
+      }
+      return this.parseAnalyzeResult(raw, finalMessage);
     } catch (error) {
       const failure = classifyCodexCliFailure(error);
       throw commandFailure(failure.code, failure.message);
@@ -106,27 +158,36 @@ export class CodexCliProvider implements TaskProvider {
     }
 
     const executable = await this.resolveExecutable();
+    const env = await this.prepareCodexEnvironment();
     const capabilities = await this.getCapabilities(executable);
     const outputPath = capabilities.supportsResumeOutputLastMessage
       ? this.createTempFilePath("clawdrive-resume-output", "json")
       : null;
     try {
+      const prompt =
+        context.mode === "apply"
+          ? this.buildApplyResumePrompt(context, response, true)
+          : this.buildResumePrompt(taskResumePrompt(undefined, response.message));
       const raw = await this.runCommand(
         executable,
         buildCodexResumeArgs({
           workspacePath: context.workspacePath,
           outputPath: outputPath ?? undefined,
           sessionId: context.sessionId,
-          prompt: this.buildResumePrompt(taskResumePrompt(undefined, response.message)),
+          prompt,
           model: this.config.providerCodexModel,
           capabilities,
         }),
         context.workspacePath,
         signal,
         true,
-        callbacks
+        callbacks,
+        env
       );
       const message = outputPath ? await this.readOutputMessage(outputPath) : this.extractLastAgentMessage(raw);
+      if (context.mode === "apply") {
+        return this.parseApplyResult(raw, message);
+      }
       return this.parseAnalyzeMessage(message);
     } catch (error) {
       const failure = classifyCodexCliFailure(error);
@@ -253,10 +314,11 @@ export class CodexCliProvider implements TaskProvider {
     }
 
     const signal = new AbortController().signal;
+    const env = await this.prepareCodexEnvironment();
     const [rootHelp, execHelp, resumeHelp] = await Promise.all([
-      this.runCommand(executable, ["--help"], process.cwd(), signal, false),
-      this.runCommand(executable, ["exec", "--help"], process.cwd(), signal, false),
-      this.runCommand(executable, ["exec", "resume", "--help"], process.cwd(), signal, false),
+      this.runCommand(executable, ["--help"], process.cwd(), signal, false, undefined, env),
+      this.runCommand(executable, ["exec", "--help"], process.cwd(), signal, false, undefined, env),
+      this.runCommand(executable, ["exec", "resume", "--help"], process.cwd(), signal, false, undefined, env),
     ]);
     const capabilities = detectCodexCliCapabilities(rootHelp, execHelp, resumeHelp);
     this.capabilityCache.set(executable, capabilities);
@@ -269,12 +331,13 @@ export class CodexCliProvider implements TaskProvider {
     cwd: string | null,
     signal: AbortSignal,
     parseEvents: boolean,
-    callbacks?: ProviderRunCallbacks
+    callbacks?: ProviderRunCallbacks,
+    env?: NodeJS.ProcessEnv
   ): Promise<string> {
     return await new Promise<string>((resolve, reject) => {
       const child = spawn(executable, args, {
         cwd: cwd ?? undefined,
-        env: process.env,
+        env: env ?? process.env,
         windowsHide: true,
         shell: false,
       });
@@ -400,6 +463,46 @@ export class CodexCliProvider implements TaskProvider {
     };
   }
 
+  private parseApplyResult(raw: string, finalMessage?: string | null): TaskRunResult {
+    const parsed = JSON.parse(stripMarkdownCodeFence(finalMessage ?? this.extractLastAgentMessage(raw))) as ApplySchemaResponse;
+    if (parsed.stage === "decision") {
+      const decision: TaskDecisionRequest = {
+        summary: parsed.summary.trim(),
+        options: parsed.options.map((option) => ({
+          id: option.id.trim(),
+          title: option.title.trim(),
+          summary: option.summary.trim(),
+          recommended: option.recommended,
+        })),
+        recommendedOptionId: parsed.options.find((option) => option.recommended)?.id ?? null,
+      };
+      return {
+        summary: decision.summary,
+        output: decision.options.map((option) => `${option.id}: ${option.title} - ${option.summary}`).join("\n"),
+        decision,
+      };
+    }
+
+    if (parsed.stage === "approval") {
+      const approval: TaskApprovalRequest = {
+        summary: parsed.summary.trim(),
+        operations: parsed.operations.map((operation) => this.parseApplyOperation(operation)),
+      };
+      return {
+        summary: approval.summary,
+        output: approval.operations.map((operation) => this.describeApplyOperation(operation)).join("\n"),
+        approval,
+      };
+    }
+
+    return {
+      summary: parsed.summary.trim(),
+      output: parsed.details.trim(),
+      decision: null,
+      approval: null,
+    };
+  }
+
   private extractLastAgentMessage(raw: string): string {
     let lastText = "";
     for (const line of raw.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
@@ -426,10 +529,13 @@ export class CodexCliProvider implements TaskProvider {
     const lines = [
       "You are running inside ClawDrive for VS Code.",
       "Stay read-only. Do not modify files, run mutating commands, or suggest applying changes now.",
-      "Prefer reasoning over shell exploration.",
-      "If you need shell commands, keep them minimal and read-only.",
+      "Default to reasoning from the prompt, focus paths, and common repository conventions instead of shell exploration.",
+      "Do not start with workspace-wide shell probing or broad directory scans.",
+      "Only use a shell command if it is strictly necessary to answer the request.",
+      "If a shell command is blocked by policy or unavailable, do not retry with more shell commands. Continue with a best-effort answer and state the limitation briefly.",
+      "If you need shell commands, keep them minimal, targeted, and read-only.",
       "Do not assume rg is installed.",
-      "On Windows, prefer Get-ChildItem, Get-Content, and other basic built-in commands over rg-heavy scans.",
+      "On Windows, prefer narrow built-in commands over rg-heavy or workspace-wide scans.",
       "Produce a concise explanation and a more detailed analysis.",
       `User request: ${context.prompt}`,
     ];
@@ -447,10 +553,13 @@ export class CodexCliProvider implements TaskProvider {
     const lines = [
       "You are running inside ClawDrive for VS Code.",
       "Stay read-only. Do not modify files.",
-      "Prefer reasoning over shell exploration.",
-      "If you need shell commands, keep them minimal and read-only.",
+      "Default to reasoning from the prompt, focus paths, and common repository conventions instead of shell exploration.",
+      "Do not start with workspace-wide shell probing or broad directory scans.",
+      "Only use a shell command if it is strictly necessary to evaluate options.",
+      "If a shell command is blocked by policy or unavailable, do not retry with more shell commands. Continue with a best-effort plan and state the limitation briefly.",
+      "If you need shell commands, keep them minimal, targeted, and read-only.",
       "Do not assume rg is installed.",
-      "On Windows, prefer basic built-in commands over rg-heavy scans.",
+      "On Windows, prefer narrow built-in commands over rg-heavy or workspace-wide scans.",
       "Return 2 to 4 meaningful implementation options and mark exactly one option as recommended.",
       "Each option must be distinct and concise.",
       `User request: ${context.prompt}`,
@@ -464,6 +573,56 @@ export class CodexCliProvider implements TaskProvider {
     if (context.paths.length) {
       lines.push(`Focus paths: ${context.paths.join(", ")}`);
     }
+    return lines.join("\n");
+  }
+
+  private buildApplyDecisionPrompt(context: ProviderRunContext, forceJsonReply: boolean): string {
+    const lines = [
+      "You are running inside ClawDrive for VS Code.",
+      "Stay read-only. Do not modify files.",
+      "Default to reasoning from the prompt and focus paths instead of shell exploration.",
+      "Do not start with workspace-wide shell probing or broad directory scans.",
+      "If a shell command is blocked by policy or unavailable, continue with a best-effort implementation decision instead of retrying with more shell commands.",
+      "Do not execute shell writes, git commands, tests, formatting, or terminal-based edits.",
+      "First decide on an implementation direction before proposing concrete file operations.",
+      "Return 2 to 4 meaningful implementation options and mark exactly one option as recommended.",
+      `User request: ${context.prompt}`,
+    ];
+    if (context.paths.length) {
+      lines.push(`Focus paths: ${context.paths.join(", ")}`);
+    }
+    if (forceJsonReply) {
+      lines.push(
+        'Return a raw JSON object only in this shape: {"stage":"decision","summary":"...","options":[{"id":"option_a","title":"...","summary":"...","recommended":true}]}'
+      );
+      lines.push("Do not wrap the JSON in markdown fences.");
+    }
+    return lines.join("\n");
+  }
+
+  private buildApplyResumePrompt(context: ProviderRunContext, response: TaskResponseInput, forceJsonReply: boolean): string {
+    const selected = response.optionId ? `The user chose option ${response.optionId}.` : response.message?.trim() ?? "Continue the task.";
+    const lines = [
+      selected,
+      "Stay read-only. Do not modify files yourself.",
+      "Produce a structured apply proposal using only supported operations: write_file and replace_text.",
+      "Do not use delete, rename, shell commands, git, terminal, tests, or formatting steps.",
+      "Paths must stay inside the workspace and should be returned as workspace-relative paths when possible.",
+    ];
+
+    if (context.resumeFromState === "interrupted" && !context.decision) {
+      lines.push("If you still need a user decision, return stage=decision again.");
+    } else {
+      lines.push("Return stage=approval with a concise summary and the exact file operations needed.");
+    }
+
+    if (forceJsonReply) {
+      lines.push(
+        'Return a raw JSON object only. Use one of: {"stage":"decision","summary":"...","options":[...]}, {"stage":"approval","summary":"...","operations":[{"type":"write_file","path":"...","content":"..."},{"type":"replace_text","path":"...","oldText":"...","newText":"..."}]}, or {"stage":"completed","summary":"...","details":"..."}.'
+      );
+      lines.push("Do not wrap the JSON in markdown fences.");
+    }
+
     return lines.join("\n");
   }
 
@@ -525,6 +684,109 @@ export class CodexCliProvider implements TaskProvider {
     );
   }
 
+  private applyDecisionSchema(): string {
+    return JSON.stringify(
+      {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        properties: {
+          stage: { const: "decision" },
+          summary: { type: "string" },
+          options: {
+            type: "array",
+            minItems: 2,
+            maxItems: 4,
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                title: { type: "string" },
+                summary: { type: "string" },
+                recommended: { type: "boolean" },
+              },
+              required: ["id", "title", "summary", "recommended"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["stage", "summary", "options"],
+        additionalProperties: false,
+      },
+      null,
+      2
+    );
+  }
+
+  private applyApprovalSchema(): string {
+    return JSON.stringify(
+      {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        properties: {
+          stage: { const: "approval" },
+          summary: { type: "string" },
+          operations: {
+            type: "array",
+            minItems: 1,
+            items: {
+              oneOf: [
+                {
+                  type: "object",
+                  properties: {
+                    type: { const: "write_file" },
+                    path: { type: "string" },
+                    content: { type: "string" },
+                  },
+                  required: ["type", "path", "content"],
+                  additionalProperties: false,
+                },
+                {
+                  type: "object",
+                  properties: {
+                    type: { const: "replace_text" },
+                    path: { type: "string" },
+                    oldText: { type: "string" },
+                    newText: { type: "string" },
+                  },
+                  required: ["type", "path", "oldText", "newText"],
+                  additionalProperties: false,
+                },
+              ],
+            },
+          },
+        },
+        required: ["stage", "summary", "operations"],
+        additionalProperties: false,
+      },
+      null,
+      2
+    );
+  }
+
+  private applyUnionSchema(): string {
+    return JSON.stringify(
+      {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        oneOf: [
+          JSON.parse(this.applyDecisionSchema()),
+          JSON.parse(this.applyApprovalSchema()),
+          {
+            type: "object",
+            properties: {
+              stage: { const: "completed" },
+              summary: { type: "string" },
+              details: { type: "string" },
+            },
+            required: ["stage", "summary", "details"],
+            additionalProperties: false,
+          },
+        ],
+      },
+      null,
+      2
+    );
+  }
+
   private async writeSchema(content: string): Promise<string> {
     const filePath = this.createTempFilePath("clawdrive-schema", "json");
     await fs.writeFile(filePath, content, "utf8");
@@ -549,10 +811,80 @@ export class CodexCliProvider implements TaskProvider {
     }
     await fs.rm(filePath, { force: true });
   }
+
+  private parseApplyOperation(operation: ApplyApprovalSchemaResponse["operations"][number]): ApplyOperation {
+    if (operation.type === "write_file") {
+      return {
+        type: "write_file",
+        path: operation.path.trim(),
+        content: operation.content,
+      };
+    }
+    if (operation.type === "replace_text") {
+      return {
+        type: "replace_text",
+        path: operation.path.trim(),
+        oldText: operation.oldText,
+        newText: operation.newText,
+      };
+    }
+    throw commandFailureTypeGuard("PROVIDER_OUTPUT_INVALID", `Unsupported apply operation type returned by provider: ${(operation as { type?: string }).type ?? "unknown"}`);
+  }
+
+  private describeApplyOperation(operation: ApplyOperation): string {
+    return operation.type === "write_file" ? `write_file ${operation.path}` : `replace_text ${operation.path}`;
+  }
+
+  private async prepareCodexEnvironment(): Promise<NodeJS.ProcessEnv> {
+    const sourceHome = this.resolveSourceCodexHome();
+    await fs.mkdir(this.isolatedCodexHome, { recursive: true });
+
+    const sourceAuthPath = path.join(sourceHome, "auth.json");
+    const targetAuthPath = path.join(this.isolatedCodexHome, "auth.json");
+    try {
+      await fs.copyFile(sourceAuthPath, targetAuthPath);
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
+    }
+
+    const sourceConfigPath = path.join(sourceHome, "config.toml");
+    const targetConfigPath = path.join(this.isolatedCodexHome, "config.toml");
+    try {
+      const rawConfig = await fs.readFile(sourceConfigPath, "utf8");
+      const sanitizedConfig = sanitizeCodexConfig(rawConfig);
+      await fs.writeFile(targetConfigPath, sanitizedConfig, "utf8");
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
+    }
+
+    if (!this.hasLoggedEnvironment) {
+      this.hasLoggedEnvironment = true;
+      log(`[codex] using isolated CODEX_HOME: ${this.isolatedCodexHome}`);
+      log(`[codex] source config home: ${sourceHome}`);
+    }
+
+    return {
+      ...process.env,
+      CODEX_HOME: this.isolatedCodexHome,
+    };
+  }
+
+  private resolveSourceCodexHome(): string {
+    const configured = process.env.CODEX_HOME?.trim();
+    return configured || path.join(os.homedir(), ".codex");
+  }
 }
 
 function stripMarkdownCodeFence(value: string): string {
   const trimmed = value.trim();
   const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return match ? match[1].trim() : trimmed;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

@@ -50,6 +50,33 @@ test("AgentRouteService returns current running task instead of spawning a dupli
   assert.match(response.message, /already running/i);
 });
 
+test("AgentRouteService approval prompts target waiting_approval tasks", async () => {
+  setLanguage("en");
+  const waitingApproval = makeTask("task-approval", "waiting_approval");
+  const service = new AgentRouteService({
+    taskService: {
+      listContinuationCandidates: () => [toCandidate(waitingApproval)],
+      respondToTask: async (params: { taskId: string; approval?: "approved" | "rejected" }) => {
+        assert.equal(params.taskId, waitingApproval.taskId);
+        assert.equal(params.approval, "approved");
+        return {
+          ...waitingApproval,
+          state: "queued",
+          summary: "Apply task queued.",
+        };
+      },
+      getTask: () => waitingApproval,
+    } as never,
+    getConnectionState: () => "connected",
+    getProviderStatus: () => providerStatus,
+  });
+
+  const response = await service.route({ prompt: "批准执行" });
+  assert.equal(response.kind, "task");
+  assert.equal(response.route, "continue");
+  assert.equal(response.data.state, "queued");
+});
+
 function makeTask(taskId: string, state: TaskSnapshot["state"]): TaskSnapshot {
   return {
     taskId,
@@ -71,6 +98,13 @@ function makeTask(taskId: string, state: TaskSnapshot["state"]): TaskSnapshot {
               { id: "option_a", title: "A", summary: "Recommended", recommended: true },
               { id: "option_b", title: "B", summary: "Alternative", recommended: false },
             ],
+          }
+        : null,
+    approval:
+      state === "waiting_approval"
+        ? {
+            summary: "Apply these changes.",
+            operations: [{ type: "write_file", path: "README.md", content: "updated" }],
           }
         : null,
     error: null,

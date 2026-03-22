@@ -5,6 +5,7 @@ import {
   buildCodexResumeArgs,
   classifyCodexCliFailure,
   detectCodexCliCapabilities,
+  sanitizeCodexConfig,
   validateCodexExecutablePath,
   type CodexCliCapabilities,
 } from "../../src/tasks/codex-cli";
@@ -96,8 +97,52 @@ test("classifyCodexCliFailure maps common provider failures to stable codes", ()
     code: "PROVIDER_EXECUTABLE_MISSING",
     message: "Codex executable was not found. Check clawdrive.provider.codex.path and local installation.",
   });
+  assert.deepEqual(
+    classifyCodexCliFailure(new Error('worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))')),
+    {
+      code: "PROVIDER_TRANSPORT_FAILED",
+      message:
+        "Codex transport failed while talking to a downstream service. Check external MCP or model-provider compatibility.",
+    }
+  );
+  assert.deepEqual(classifyCodexCliFailure(new Error("rejected: blocked by policy")), {
+    code: "PROVIDER_COMMAND_POLICY_BLOCKED",
+    message:
+      "Codex tried to run a shell probe, but its execution policy blocked the command. Retry with a narrower prompt or continue without shell exploration.",
+  });
   assert.deepEqual(classifyCodexCliFailure(new Error("unexpected argument '--output-schema' found")), {
     code: "PROVIDER_CLI_ARGS_UNSUPPORTED",
     message: "The installed Codex CLI does not support one or more arguments required by this provider.",
   });
+});
+
+test("sanitizeCodexConfig removes mcp server sections and keeps model config", () => {
+  const raw = [
+    'model_provider = "proxy"',
+    'model = "gpt-5.4"',
+    "",
+    "[mcp_servers.unityMCP]",
+    'url = "http://127.0.0.1:8080/mcp"',
+    "",
+    "[features]",
+    "multi_agent = true",
+    "",
+    "[model_providers.proxy]",
+    'name = "MyCodex"',
+  ].join("\n");
+
+  assert.equal(
+    sanitizeCodexConfig(raw),
+    [
+      'model_provider = "proxy"',
+      'model = "gpt-5.4"',
+      "",
+      "[features]",
+      "multi_agent = true",
+      "",
+      "[model_providers.proxy]",
+      'name = "MyCodex"',
+      "",
+    ].join("\n")
+  );
 });

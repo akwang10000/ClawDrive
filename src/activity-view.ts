@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 import { getOutputChannel } from "./logger";
-import { taskResultTitle, taskStateLabel } from "./tasks/text";
+import { taskApprovalTitle, taskApprovalSummary, taskResultTitle, taskStateLabel } from "./tasks/text";
 import type { TaskService } from "./tasks/service";
-import type { TaskDecisionOption, TaskSnapshot } from "./tasks/types";
+import type { ApplyOperation, TaskDecisionOption, TaskSnapshot } from "./tasks/types";
 
 class TaskTreeItem extends vscode.TreeItem {
   constructor(readonly snapshot: TaskSnapshot) {
@@ -27,6 +27,8 @@ class TaskTreeItem extends vscode.TreeItem {
         return new vscode.ThemeIcon("error");
       case "waiting_decision":
         return new vscode.ThemeIcon("question");
+      case "waiting_approval":
+        return new vscode.ThemeIcon("pass");
       case "running":
         return new vscode.ThemeIcon("sync~spin");
       case "cancelled":
@@ -74,6 +76,13 @@ export class ClawDriveActivityProvider implements vscode.TreeDataProvider<TaskTr
         output.appendLine(this.formatOption(option, option.id === result.snapshot.decision.recommendedOptionId));
       }
     }
+    if (result.approval) {
+      output.appendLine(taskApprovalTitle());
+      output.appendLine(taskApprovalSummary(result.approval));
+      for (const operation of result.approval.operations) {
+        output.appendLine(this.formatApplyOperation(operation));
+      }
+    }
     if (result.snapshot.lastOutput) {
       output.appendLine("");
       output.appendLine(result.snapshot.lastOutput);
@@ -117,11 +126,25 @@ export class ClawDriveActivityProvider implements vscode.TreeDataProvider<TaskTr
     }
   }
 
+  async approveTask(taskId: string): Promise<void> {
+    await this.taskService.respondToTask({ taskId, approval: "approved" });
+  }
+
+  async rejectTask(taskId: string): Promise<void> {
+    await this.taskService.respondToTask({ taskId, approval: "rejected" });
+  }
+
   dispose(): void {
     this.emitter.dispose();
   }
 
   private formatOption(option: TaskDecisionOption, recommended: boolean): string {
     return recommended ? `* ${option.id}: ${option.title} - ${option.summary}` : `- ${option.id}: ${option.title} - ${option.summary}`;
+  }
+
+  private formatApplyOperation(operation: ApplyOperation): string {
+    return operation.type === "write_file"
+      ? `- write_file ${operation.path}`
+      : `- replace_text ${operation.path}`;
   }
 }

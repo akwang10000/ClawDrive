@@ -4,10 +4,12 @@ import { getConfig } from "../config";
 import { commandFailure } from "../guards/errors";
 import { resolveContainedPath } from "../guards/workspace-access";
 import { log } from "../logger";
+import { StructuredApplyExecutor } from "./apply-executor";
 import { CodexCliProvider } from "./codex-provider";
 import type { ProviderProbeResult, TaskProvider } from "./provider";
 import { TaskStorage } from "./storage";
 import {
+  taskApprovalSummary,
   providerStatusDisabled,
   providerStatusError,
   providerStatusMissing,
@@ -16,8 +18,10 @@ import {
   taskFailedSummary,
   taskInterruptedSummary,
   taskQueuedSummary,
+  taskRejectedSummary,
   taskResumePrompt,
   taskStartedSummary,
+  taskWaitingApprovalSummary,
   taskWaitingSummary,
   taskWriteBlockedMessage,
 } from "./text";
@@ -31,16 +35,21 @@ import type {
   TaskResponseInput,
   TaskResultPayload,
   TaskRunResult,
+  TaskApprovalRequest,
   TaskSnapshot,
   TaskState,
   TaskStartParams,
 } from "./types";
 
-type RunTrigger = { kind: "start" } | { kind: "resume"; response: TaskResponseInput };
+type RunTrigger =
+  | { kind: "start" }
+  | { kind: "resume"; response: TaskResponseInput; fromState: TaskState }
+  | { kind: "apply_approval" };
 
 interface TaskServiceOptions {
   getConfig?: typeof getConfig;
   createProvider?: (config: ReturnType<typeof getConfig>) => TaskProvider;
+  createApplyExecutor?: () => StructuredApplyExecutor;
   createStorage?: (rootPath: string, historyLimit: number) => TaskStorage;
   getWorkspacePath?: () => string | null;
   now?: () => string;
@@ -56,6 +65,7 @@ interface ActiveRun {
 export class TaskService implements vscode.Disposable {
   private storage: TaskStorage;
   private provider: TaskProvider;
+  private readonly applyExecutor: StructuredApplyExecutor;
   private readonly options: Required<TaskServiceOptions>;
   private readonly emitter = new vscode.EventEmitter<void>();
   private readonly lifecycleEmitter = new vscode.EventEmitter<TaskEventRecord>();
@@ -75,11 +85,13 @@ export class TaskService implements vscode.Disposable {
     this.options = {
       getConfig: options?.getConfig ?? getConfig,
       createProvider: options?.createProvider ?? ((config) => new CodexCliProvider(config)),
+      createApplyExecutor: options?.createApplyExecutor ?? (() => new StructuredApplyExecutor()),
       createStorage: options?.createStorage ?? ((rootPath, historyLimit) => new TaskStorage(rootPath, historyLimit)),
       getWorkspacePath: options?.getWorkspacePath ?? (() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null),
       now: options?.now ?? (() => new Date().toISOString()),
     };
     const cfg = this.options.getConfig();
+    this.applyExecutor = this.options.createApplyExecutor();
     this.storage = this.createStorage(cfg.tasksHistoryLimit);
     this.provider = this.createProvider();
   }
@@ -145,8 +157,10 @@ export class TaskService implements vscode.Disposable {
   }
 
   async getTaskResult(taskId: string): Promise<TaskResultPayload> {
+    const snapshot = this.getTask(taskId);
     return {
-      snapshot: this.getTask(taskId),
+      snapshot,
+      approval: snapshot.approval,
       events: await this.storage.readEvents(taskId),
     };
   }
@@ -157,17 +171,17 @@ export class TaskService implements vscode.Disposable {
     if (!prompt) {
       throw commandFailure("INVALID_PARAMS", "prompt must be a non-empty string.");
     }
-    if (params.mode !== "analyze" && params.mode !== "plan") {
-      throw commandFailure("INVALID_PARAMS", "mode must be analyze or plan.");
+    if (params.mode !== "analyze" && params.mode !== "plan" && params.mode !== "apply") {
+      throw commandFailure("INVALID_PARAMS", "mode must be analyze, plan, or apply.");
     }
-    if (/\b(apply|implement|write|modify|edit|fix|patch|commit)\b/i.test(prompt) && params.mode !== "plan") {
+    if (/\b(apply|implement|write|modify|edit|fix|patch|commit)\b/i.test(prompt) && params.mode === "analyze") {
       throw commandFailure("TASK_MODE_UNSUPPORTED", taskWriteBlockedMessage());
     }
 
     const now = this.options.now();
     const snapshot: TaskSnapshot = {
       taskId: randomUUID(),
-      title: `${params.mode === "plan" ? "Plan" : "Analyze"}: ${this.clip(prompt, 72)}`,
+      title: `${params.mode === "plan" ? "Plan" : params.mode === "apply" ? "Apply" : "Analyze"}: ${this.clip(prompt, 72)}`,
       mode: params.mode,
       state: "queued",
       prompt,
@@ -177,6 +191,7 @@ export class TaskService implements vscode.Disposable {
       summary: taskQueuedSummary(params.mode),
       lastOutput: null,
       decision: null,
+      approval: null,
       error: null,
       errorCode: null,
       providerKind: this.provider.kind,
@@ -197,8 +212,16 @@ export class TaskService implements vscode.Disposable {
     const snapshot = this.getTask(params.taskId);
     const response = this.normalizeResponse(params);
 
-    if (snapshot.state !== "waiting_decision" && snapshot.state !== "interrupted") {
+    if (snapshot.state !== "waiting_decision" && snapshot.state !== "waiting_approval" && snapshot.state !== "interrupted") {
       throw commandFailure("TASK_NOT_WAITING", `Task ${snapshot.taskId} is not resumable in state ${snapshot.state}.`);
+    }
+
+    if (snapshot.state === "waiting_approval") {
+      return await this.respondToApproval(snapshot, response);
+    }
+
+    if (response.approval) {
+      throw commandFailure("INVALID_PARAMS", `${snapshot.state} does not accept approval responses.`);
     }
 
     if (snapshot.state === "waiting_decision" && response.optionId) {
@@ -208,12 +231,13 @@ export class TaskService implements vscode.Disposable {
       response.message = taskResumePrompt();
     }
 
+    const fromState = snapshot.state;
     snapshot.state = "queued";
     snapshot.summary = taskQueuedSummary(snapshot.mode);
     snapshot.error = null;
     snapshot.errorCode = null;
     snapshot.updatedAt = this.options.now();
-    this.pendingRuns.set(snapshot.taskId, { kind: "resume", response });
+    this.pendingRuns.set(snapshot.taskId, { kind: "resume", response, fromState });
     await this.storage.saveSnapshot(snapshot);
     await this.appendEvent(snapshot, "queued", snapshot.summary);
     this.tasks.set(snapshot.taskId, snapshot);
@@ -271,15 +295,17 @@ export class TaskService implements vscode.Disposable {
 
   listContinuationCandidates(): TaskContinuationCandidate[] {
     const priority: Record<TaskContinuationCandidate["state"], number> = {
-      waiting_decision: 0,
-      interrupted: 1,
-      running: 2,
-      queued: 3,
+      waiting_approval: 0,
+      waiting_decision: 1,
+      interrupted: 2,
+      running: 3,
+      queued: 4,
     };
 
     return [...this.tasks.values()]
       .filter(
         (task): task is TaskSnapshot & { state: TaskContinuationCandidate["state"] } =>
+          task.state === "waiting_approval" ||
           task.state === "waiting_decision" ||
           task.state === "interrupted" ||
           task.state === "running" ||
@@ -384,7 +410,9 @@ export class TaskService implements vscode.Disposable {
       };
 
       const result =
-        trigger.kind === "resume"
+        trigger.kind === "apply_approval"
+          ? await this.applyExecutor.apply(this.requireApproval(snapshot))
+          : trigger.kind === "resume"
           ? await this.provider.resumeTask(
               {
                 taskId: snapshot.taskId,
@@ -393,6 +421,9 @@ export class TaskService implements vscode.Disposable {
                 paths: snapshot.paths,
                 workspacePath,
                 sessionId: snapshot.providerSessionId,
+                resumeFromState: trigger.fromState,
+                decision: snapshot.decision,
+                approval: snapshot.approval,
               },
               trigger.response,
               callbacks,
@@ -406,6 +437,9 @@ export class TaskService implements vscode.Disposable {
                 paths: snapshot.paths,
                 workspacePath,
                 sessionId: snapshot.providerSessionId,
+                resumeFromState: null,
+                decision: snapshot.decision,
+                approval: snapshot.approval,
               },
               callbacks,
               signal
@@ -467,12 +501,22 @@ export class TaskService implements vscode.Disposable {
     if (result.decision) {
       snapshot.state = "waiting_decision";
       snapshot.decision = result.decision;
+      snapshot.approval = null;
       snapshot.summary = taskWaitingSummary(result.decision.options.length);
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "waiting_decision", snapshot.summary, result.decision.summary);
+    } else if (result.approval) {
+      snapshot.state = "waiting_approval";
+      snapshot.approval = result.approval;
+      snapshot.summary = taskWaitingApprovalSummary(result.approval.operations.length);
+      await this.storage.saveSnapshot(snapshot);
+      await this.appendEvent(snapshot, "waiting_approval", snapshot.summary, taskApprovalSummary(result.approval));
     } else {
       snapshot.state = "completed";
-      snapshot.decision = null;
+      if (snapshot.mode !== "apply") {
+        snapshot.decision = null;
+        snapshot.approval = null;
+      }
       snapshot.summary = result.summary;
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "completed", snapshot.summary);
@@ -493,10 +537,11 @@ export class TaskService implements vscode.Disposable {
   private normalizeResponse(params: TaskRespondParams): TaskResponseInput {
     const optionId = params.optionId?.trim();
     const message = params.message?.trim();
-    if (!optionId && !message) {
-      throw commandFailure("INVALID_PARAMS", "Respond requires optionId or message.");
+    const approval = params.approval;
+    if (!optionId && !message && approval !== "approved" && approval !== "rejected") {
+      throw commandFailure("INVALID_PARAMS", "Respond requires optionId, message, or approval.");
     }
-    return { optionId: optionId || undefined, message: message || undefined };
+    return { optionId: optionId || undefined, message: message || undefined, approval };
   }
 
   private ensureProviderReady(): void {
@@ -565,6 +610,7 @@ export class TaskService implements vscode.Disposable {
   private normalizeLoadedSnapshot(snapshot: TaskSnapshot): TaskSnapshot {
     return {
       ...snapshot,
+      approval: snapshot.approval ?? null,
       errorCode: snapshot.errorCode ?? null,
       resultSummary: snapshot.resultSummary ?? null,
       providerSessionId: snapshot.providerSessionId ?? null,
@@ -572,5 +618,44 @@ export class TaskService implements vscode.Disposable {
       lastOutput: snapshot.lastOutput ?? null,
       error: snapshot.error ?? null,
     };
+  }
+
+  private async respondToApproval(snapshot: TaskSnapshot, response: TaskResponseInput): Promise<TaskSnapshot> {
+    if (response.approval === "rejected") {
+      snapshot.state = "cancelled";
+      snapshot.summary = taskRejectedSummary();
+      snapshot.error = null;
+      snapshot.errorCode = null;
+      snapshot.updatedAt = this.options.now();
+      await this.storage.saveSnapshot(snapshot);
+      await this.appendEvent(snapshot, "rejected", snapshot.summary, snapshot.approval?.summary);
+      this.tasks.set(snapshot.taskId, snapshot);
+      this.emitter.fire();
+      return snapshot;
+    }
+
+    if (response.approval !== "approved") {
+      throw commandFailure("INVALID_PARAMS", "waiting_approval requires approval=approved or approval=rejected.");
+    }
+
+    snapshot.state = "queued";
+    snapshot.summary = taskQueuedSummary(snapshot.mode);
+    snapshot.error = null;
+    snapshot.errorCode = null;
+    snapshot.updatedAt = this.options.now();
+    this.pendingRuns.set(snapshot.taskId, { kind: "apply_approval" });
+    await this.storage.saveSnapshot(snapshot);
+    await this.appendEvent(snapshot, "approved", snapshot.summary, snapshot.approval?.summary);
+    this.tasks.set(snapshot.taskId, snapshot);
+    this.emitter.fire();
+    void this.pumpQueue();
+    return snapshot;
+  }
+
+  private requireApproval(snapshot: TaskSnapshot): TaskApprovalRequest {
+    if (!snapshot.approval) {
+      throw commandFailure("APPLY_PRECONDITION_FAILED", `Task ${snapshot.taskId} does not have an approval payload.`);
+    }
+    return snapshot.approval;
   }
 }

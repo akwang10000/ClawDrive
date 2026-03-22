@@ -64,6 +64,7 @@ test("buildOperatorStatusFromDiagnosis surfaces latest failed task summary", () 
     summary: "Task failed: unexpected argument",
     lastOutput: null,
     decision: null,
+    approval: null,
     error: "unexpected argument '--output-schema' found",
     errorCode: "PROVIDER_CLI_ARGS_UNSUPPORTED",
     providerKind: "codex",

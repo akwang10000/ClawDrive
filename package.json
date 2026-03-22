@@ -2,7 +2,7 @@
   "name": "clawdrive-vscode",
   "displayName": "ClawDrive for VS Code",
   "description": "Natural-language IDE agent bridge for OpenClaw.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "wangtuo",
   "license": "MIT",
   "private": true,
@@ -66,6 +66,14 @@
         "title": "ClawDrive: Continue Task"
       },
       {
+        "command": "clawdrive.activity.approve",
+        "title": "ClawDrive: Approve Task"
+      },
+      {
+        "command": "clawdrive.activity.reject",
+        "title": "ClawDrive: Reject Task"
+      },
+      {
         "command": "clawdrive.activity.cancel",
         "title": "ClawDrive: Cancel Task"
       }
@@ -98,8 +106,18 @@
           "group": "inline"
         },
         {
+          "command": "clawdrive.activity.approve",
+          "when": "view == clawdrive.activity && viewItem == task:waiting_approval",
+          "group": "inline"
+        },
+        {
+          "command": "clawdrive.activity.reject",
+          "when": "view == clawdrive.activity && viewItem == task:waiting_approval",
+          "group": "inline"
+        },
+        {
           "command": "clawdrive.activity.cancel",
-          "when": "view == clawdrive.activity && (viewItem == task:queued || viewItem == task:running || viewItem == task:waiting_decision || viewItem == task:interrupted)",
+          "when": "view == clawdrive.activity && (viewItem == task:queued || viewItem == task:running || viewItem == task:waiting_decision || viewItem == task:waiting_approval || viewItem == task:interrupted)",
           "group": "inline"
         }
       ]

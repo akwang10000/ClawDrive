@@ -2,100 +2,152 @@
 
 ## Purpose
 
-The task layer is the real execution backbone of this product.
+The task layer is the execution backbone of ClawDrive.
 
-It is not enough to document "start a provider and get text back".
-The rewrite needs an explicit task contract so OpenClaw, the extension, and future providers all agree on the same lifecycle.
+It is the contract that keeps OpenClaw, the VS Code extension, and future providers aligned on:
+
+- lifecycle
+- persistence
+- resume behavior
+- approval behavior
+- result reporting
 
 ## Stable Task Concepts
 
-The task model should preserve these concepts:
+Each long-running task has:
 
-- one task identifier per long-running unit of work
-- a task mode such as inspect-like analysis, planning, or write-capable execution
-- one stable lifecycle that OpenClaw can observe
+- one `taskId`
+- one `mode`
+- one stable lifecycle
 - resumable turns rather than one opaque provider run
-- decision pauses as first-class task states
+- decision and approval pauses as explicit states
 
-## Lifecycle Requirements
+## Current Modes
 
-The rewrite should preserve these distinct states:
+The current implementation exposes:
+
+- `analyze`
+- `plan`
+- `apply`
+
+Meaning:
+
+- `analyze`: repository understanding, explanation, comparison, summary
+- `plan`: options, tradeoffs, recommended direction, no file mutation
+- `apply`: plan first, then explicit approval, then local structured mutation
+
+## Lifecycle
+
+Current states:
 
 - `queued`
 - `running`
 - `waiting_decision`
+- `waiting_approval`
 - `completed`
 - `failed`
 - `cancelled`
 - `interrupted`
 
-These states must stay distinct in storage, UI, and OpenClaw-facing reporting.
-Timeout, user cancellation, provider failure, and IDE restart are not the same event.
+These states are intentionally distinct in storage, UI, and OpenClaw-facing reporting.
 
 ## Turn Model
 
-A task should be able to span multiple turns.
+A task may span multiple turns.
 
-Minimum behavior:
+Current behavior:
 
-- the first turn starts from the original user request
+- the first turn starts from the original prompt
 - later turns may continue after a user decision
-- each turn can produce progress, output, a decision request, a final result, or an error
+- `apply` may continue again after explicit approval
+- each turn may emit progress, output, a decision request, an approval request, a final result, or an error
 
-This is especially important for plan-then-apply workflows.
+## Apply Thin Slice
+
+The current write path is intentionally narrow.
+
+Provider responsibilities:
+
+- analyze the request
+- return 2 to 4 options for `apply`
+- after a decision, return a structured approval payload
+- do not write files directly
+
+Local executor responsibilities:
+
+- validate all target paths stay inside the workspace
+- prevalidate the full operation batch
+- apply supported operations
+- attempt rollback on partial failure
+
+Supported operations:
+
+- `write_file`
+- `replace_text`
+
+Out of scope:
+
+- delete
+- rename
+- arbitrary shell
+- git
+- test, debug, or formatter execution
 
 ## Queueing And Concurrency
 
 The current implementation runs one active provider task at a time and queues later tasks behind it.
 
-The rewrite may keep or revise that rule, but it should decide explicitly and document it.
-
-If the first release keeps single-active-task behavior, the docs should say so plainly.
+Direct synchronous read commands do not enter this queue.
 
 ## Persistence Requirements
 
-Long-running tasks should survive normal reconnect boundaries.
+Long-running tasks survive reconnect and normal restart boundaries.
 
-Minimum expectations:
+Current guarantees:
 
 - task snapshots are persisted
 - event history is persisted
-- terminal tasks can be pruned by a history limit
-- a task that was `running` when VS Code shuts down is restored as `interrupted`, not silently forgotten
+- terminal history is pruned by a limit
+- a task that was `running` during shutdown is restored as `interrupted`
+- a task that was `waiting_decision` or `waiting_approval` remains resumable after restart
 
 ## Decision Contract
 
-Planning is not just read-only chat.
+The planning and apply paths can pause for a user decision.
 
-The planning path should support:
+Current rules:
 
-- 2-4 meaningful options when multiple directions exist
-- one recommended option
-- a short context summary that explains the tradeoff
-- a clean resume path after the user chooses
+- return 2 to 4 meaningful options when multiple directions exist
+- mark exactly one recommended option when appropriate
+- store the decision summary and option list on the task snapshot
+- allow the user to continue by `optionId` or message
 
-This decision contract should be provider-neutral even if Codex is the first implementation.
+## Approval Contract
+
+`apply` introduces a second explicit pause:
+
+- `waiting_approval`
+
+Current rules:
+
+- selecting a plan option is not the same as approving writes
+- `approval: "approved"` triggers local apply execution
+- `approval: "rejected"` cancels the task without mutating files
+- approval details remain visible in result history for auditability
 
 ## Recovery And Resume Rules
 
-The rewrite should define recovery behavior in user terms, not only provider terms.
+Current recovery behavior is defined in user-facing terms.
 
-Minimum rules:
+Rules:
 
-- `continue` should resolve the most recent active or waiting task when there is no ambiguity
-- `use the recommended option` should map onto the current waiting decision when one exists
-- `failed`, `cancelled`, `timed out`, and `interrupted` should lead to different recovery suggestions
-- if multiple tasks could match a continuation request, the user should be asked to disambiguate in plain language
+- `continue` prefers the latest `waiting_decision`
+- then the latest `interrupted`
+- then the latest `running` or `queued`
+- explicit approval or rejection phrases prefer the latest `waiting_approval`
+- if multiple tasks are plausible at the same priority, routing should return a plain-language clarification list instead of guessing
 
-Recommended restart behavior:
-
-- `waiting_decision` tasks remain resumable after reconnect
-- `running` tasks interrupted by extension restart return as `interrupted`
-- resumption should favor reusing existing task context rather than silently creating a new unrelated task
-
-## Provider Reality And Roadmap
-
-The rewrite docs should be explicit about the difference between architecture target and v1 reality.
+## Provider Reality
 
 Architecture target:
 
@@ -103,23 +155,8 @@ Architecture target:
 - provider-neutral lifecycle
 - provider-neutral OpenClaw-facing commands
 
-Possible v1 reality:
+Current reality:
 
-- Codex is the only implemented provider
+- Codex CLI is the only implemented provider
 
-That is acceptable for a first version as long as the public task contract does not need to be redesigned to add Claude or another provider later.
-
-## Relation To Legacy Agent Commands
-
-The current repository exposes both:
-
-- legacy `vscode.agent.*` commands
-- resumable `vscode.agent.task.*` commands
-
-The rewrite should decide early whether:
-
-- both surfaces remain
-- legacy commands become setup and diagnostics only
-- all long-running assistant work converges onto the task model
-
-That decision should be documented before implementation spreads both models further.
+That is acceptable as long as the public task contract does not need redesign to add more providers later.

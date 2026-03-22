@@ -1,35 +1,34 @@
 # ClawDrive for VS Code
 
-ClawDrive is the VS Code bridge that lets OpenClaw drive IDE-native workflows through a real Gateway session and a provider-backed task model.
+ClawDrive is the VS Code bridge that lets OpenClaw route natural-language requests into IDE-native read commands, resumable long tasks, and a controlled apply flow.
 
 Chinese version:
-- [README.md](README.md)
+- [README.md](readme.md)
 
 ## Current Status
 
-The repository has moved beyond the original Phase 1 transport slice.
+The repository has moved beyond the original Gateway command-bridge prototype.
 
-The current validated path now includes:
+Validated paths now include:
 
-- Gateway connection and signed device identity reuse
-- a read-only command surface for file, directory, editor, diagnostics, and workspace inspection
-- provider-backed long tasks through `vscode.agent.task.*`
+- Gateway connection and device identity reuse
+- a read-only command surface for workspace, file, directory, editor, and diagnostics inspection
+- `vscode.agent.route` as the public natural-language entrypoint
+- `vscode.agent.task.*` as the long-task lifecycle surface
 - Codex CLI as the first provider adapter
 - persisted task snapshots and event history
-- task recovery for `waiting_decision` and `interrupted`
-- a VS Code activity view for recent tasks
-- dashboard, settings, diagnosis, status bar, and output logging
-- optional auto-connect on VS Code startup
-- structured diagnosis for `connected`, `callable`, `provider ready`, and latest-task failure context
-- automated regression coverage for routing, provider argument shaping, task recovery, and timeout handling
+- recovery for `waiting_decision`, `waiting_approval`, and `interrupted`
+- a VS Code `ClawDrive Activity` task view
+- the first `apply` thin slice with structured edits, explicit approval, and local controlled writes
 
 Validated end-to-end flows:
 
 - `OpenClaw -> Gateway -> ClawDrive -> vscode.workspace.info -> Gateway result`
-- `OpenClaw -> vscode.agent.task.start -> Codex CLI provider -> task execution/result`
-- `OpenClaw -> vscode.agent.route -> direct inspect/analyze/plan/continue routing`
+- `OpenClaw -> vscode.agent.route -> inspect/analyze/plan/apply/continue`
+- `OpenClaw -> vscode.agent.task.start/respond/result -> Codex CLI provider -> task lifecycle`
+- `apply -> waiting_decision -> waiting_approval -> approved/rejected -> completed/cancelled`
 
-## What Exists Now
+## Public Capability Surface
 
 Implemented remote commands:
 
@@ -50,68 +49,63 @@ Implemented long-task modes:
 
 - `analyze`
 - `plan`
-
-Current natural-language behavior:
-
-- direct inspect requests can resolve synchronously through read-only commands
-- broader explanation requests route to `analyze`
-- option-seeking requests route to `plan`
-- `continue` / `use the recommended option` resolve against recent tasks
-- status and failure questions resolve through a synchronous diagnosis summary
-- write intent is redirected back to planning
+- `apply`
 
 Current task states:
 
 - `queued`
 - `running`
 - `waiting_decision`
+- `waiting_approval`
 - `completed`
 - `failed`
 - `cancelled`
 - `interrupted`
 
-## What Is Not Implemented Yet
+## Current Natural-Language Behavior
 
-- write-capable `apply` task execution
-- file mutation commands such as `vscode.file.write` or `vscode.file.edit`
-- broader language, git, test, debug, and terminal command families
-- providers beyond Codex CLI
-- polished task timeline UI beyond the current activity list and result view
+- simple inspect requests stay on synchronous read-only commands
+- broader explanation requests route to `analyze`
+- option and tradeoff requests route to `plan`
+- explicit fix / implement / modify requests default to `apply`
+- `continue` resolves against the most relevant recent active task
+- explicit approval or rejection phrases target the latest `waiting_approval`
+- status and failure questions can return a synchronous diagnosis summary
 
-## Product Goal
+## Current Write Boundary
 
-The primary goal is not raw remote command execution.
+The current `apply` slice only supports controlled structured edits:
 
-The goal is:
+- `write_file`
+- `replace_text`
 
-- users speak to OpenClaw in normal language
-- ClawDrive routes that request into the right IDE path
-- simple inspection requests stay on direct read-only commands
-- broader explanation and planning requests enter the task framework
-- progress and results come back in human-readable form
-- provider choice stays behind a stable task contract
+Explicitly out of scope in this milestone:
 
-## Operator Flow
+- delete / rename
+- arbitrary shell
+- git operations
+- test / debug / terminal / formatter execution
+- provider-side direct file mutation
 
-Recommended setup:
+Actual writes are performed by a local VS Code execution layer with:
+
+- workspace containment checks
+- whole-batch prevalidation
+- exact unique matching for `replace_text`
+- rollback attempts on write failure
+
+## Operator Notes
+
+Recommended setup flow:
 
 1. Open `ClawDrive: Settings`.
 2. Configure Gateway host, port, token, and provider settings.
 3. Leave auto-connect enabled unless you explicitly want manual connection.
-4. Save settings. The extension connects immediately.
-5. If needed, open `ClawDrive: Dashboard` to inspect `connected`, `callable`, and `provider ready`.
+4. Save settings and let the extension connect.
+5. Use `ClawDrive: Dashboard`, `ClawDrive Activity`, or the `ClawDrive` output log only when you need verification or diagnosis.
 
-The dashboard is intentionally reduced to the essential actions:
-
-- connect or reconnect
-- open settings
-- run diagnosis
-
-Advanced actions such as disconnect or detailed status remain available from the command palette.
-
-If the Gateway uses `gateway.nodes.allowCommands`, you must also allow newly added commands after upgrades.
-
-At the current milestone, the minimum recommended allowlist includes:
+If the Gateway uses `gateway.nodes.allowCommands`, keep the allowlist aligned with the extension's advertised surface.
+At minimum, allow:
 
 - `vscode.agent.route`
 - `vscode.workspace.info`
@@ -126,27 +120,37 @@ At the current milestone, the minimum recommended allowlist includes:
 - `vscode.agent.task.cancel`
 - `vscode.agent.task.result`
 
-## Compatibility Notes
+Provider execution may still emit helper, sandbox, or transport-layer warnings.
+The current objective is:
+
+- keep the primary user flow working
+- avoid turning non-fatal low-level noise into user-facing hard failures
+- surface a clearer root-cause summary in diagnosis and task results
+
+## Compatibility And Provider Notes
 
 Gateway pairing is sensitive to device identity compatibility.
+ClawDrive therefore:
 
-ClawDrive therefore needs to:
-
-- derive `deviceId` from the Ed25519 public key fingerprint
-- reuse the legacy `~/.openclaw-vscode/device.json` identity when available
-
-If that compatibility is broken, the observed failure mode is:
-
-- `Connect rejected: device identity mismatch`
+- derives `deviceId` from the Ed25519 public-key fingerprint
+- reuses the legacy `~/.openclaw-vscode/device.json` identity when available
 
 Provider-backed tasks currently depend on a locally runnable Codex CLI.
-
-Common provider failure modes now covered by the docs and diagnostics include:
+Common failure classes already covered by the implementation and docs include:
 
 - executable not found
 - provider disabled
-- incompatible CLI argument shape
+- incompatible CLI arguments
 - policy or environment friction during read-only analysis
+- external MCP configuration interfering with provider execution
+
+## Not Implemented Yet
+
+- broader language-service, git, test, debug, and terminal command families
+- delete / rename mutations
+- provider-side direct writes
+- a full diff viewer or complex approval dashboard
+- providers beyond Codex CLI
 
 ## Documentation
 
@@ -163,13 +167,14 @@ Common provider failure modes now covered by the docs and diagnostics include:
 ```powershell
 npm install
 npm run compile
+npm test
 ```
 
-Then open this folder in VS Code and press `F5` to launch the extension development host.
+Then open the repository in VS Code and press `F5` to launch the extension development host.
 
 ## Reference Boundary
 
-Behavior analysis reference only:
+Behavior-analysis reference only:
 
 - `https://github.com/akwang10000/openclaw-vscode.git`
 

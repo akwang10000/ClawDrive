@@ -196,6 +196,13 @@ function buildActionableHint(
     );
   }
 
+  if (latestTask?.state === "waiting_approval") {
+    return localizedText(
+      "The latest task is waiting for explicit approval before changes are applied.",
+      "\u6700\u8fd1\u4efb\u52a1\u6b63\u5728\u7b49\u5f85\u4f60\u660e\u786e\u6279\u51c6\uff0c\u4e4b\u540e\u624d\u4f1a\u6267\u884c\u4fee\u6539\u3002"
+    );
+  }
+
   if (latestTask?.state === "interrupted") {
     return localizedText(
       "Resume the interrupted task before starting a new one.",

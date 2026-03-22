@@ -100,7 +100,7 @@ class ClawDriveRuntime {
   async showStatus(): Promise<void> {
     const cfg = getConfig();
     const latestTask =
-      this.taskService.getLatestTask(["waiting_decision", "running", "queued", "interrupted"]) ??
+      this.taskService.getLatestTask(["waiting_approval", "waiting_decision", "running", "queued", "interrupted"]) ??
       this.taskService.getLatestTask(["failed"]);
     const status = await collectOperatorStatus(this.connectionState, this.taskService.getProviderStatus(), latestTask);
     const message = [
@@ -122,7 +122,7 @@ class ClawDriveRuntime {
   async diagnose(): Promise<void> {
     await this.taskService.refreshProviderStatus();
     const latestTask =
-      this.taskService.getLatestTask(["waiting_decision", "running", "queued", "interrupted"]) ??
+      this.taskService.getLatestTask(["waiting_approval", "waiting_decision", "running", "queued", "interrupted"]) ??
       this.taskService.getLatestTask(["failed"]);
     await runConnectionDiagnosis(this.connectionState, this.taskService.getProviderStatus(), latestTask);
   }
@@ -151,6 +151,14 @@ class ClawDriveRuntime {
 
   async cancelTask(taskId: string): Promise<void> {
     await this.taskService.cancelTask(taskId);
+  }
+
+  async approveTask(taskId: string): Promise<void> {
+    await this.activityProvider.approveTask(taskId);
+  }
+
+  async rejectTask(taskId: string): Promise<void> {
+    await this.activityProvider.rejectTask(taskId);
   }
 
   async openTaskResult(taskId: string): Promise<void> {
@@ -218,6 +226,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("clawdrive.activity.refresh", () => runtime.getActivityProvider().refresh()),
     vscode.commands.registerCommand("clawdrive.activity.openResult", (taskId: string) => runtime.openTaskResult(taskId)),
     vscode.commands.registerCommand("clawdrive.activity.continue", (taskId: string) => runtime.continueTask(taskId)),
+    vscode.commands.registerCommand("clawdrive.activity.approve", (taskId: string) => runtime.approveTask(taskId)),
+    vscode.commands.registerCommand("clawdrive.activity.reject", (taskId: string) => runtime.rejectTask(taskId)),
     vscode.commands.registerCommand("clawdrive.activity.cancel", (taskId: string) => runtime.cancelTask(taskId)),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (event.affectsConfiguration("clawdrive.provider") || event.affectsConfiguration("clawdrive.tasks")) {
