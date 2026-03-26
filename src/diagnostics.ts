@@ -9,7 +9,14 @@ import { getCurrentLocale, t } from "./i18n";
 import { getOutputChannel } from "./logger";
 import { getRegisteredCommands } from "./commands/registry";
 import { getProviderDiagnosisMessage } from "./provider-status";
-import type { ProviderStatusInfo, TaskSnapshot, TaskState } from "./tasks/types";
+import type {
+  ProviderStatusInfo,
+  TaskExecutionHealth,
+  TaskProviderEvidence,
+  TaskRuntimeSignal,
+  TaskSnapshot,
+  TaskState,
+} from "./tasks/types";
 
 interface LocalGatewayConfigSnapshot {
   path: string;
@@ -37,6 +44,9 @@ export interface DiagnosisTaskSummary {
   taskId: string;
   title: string;
   state: TaskState;
+  executionHealth: TaskExecutionHealth;
+  runtimeSignals: TaskRuntimeSignal[];
+  providerEvidence: TaskProviderEvidence | null;
   updatedAt: string;
   summary: string;
   errorCode: string | null;
@@ -53,7 +63,10 @@ export interface OperatorStatusSnapshot {
   findings: DiagnosisFinding[];
   latestTask: DiagnosisTaskSummary | null;
   latestTaskState: TaskState | null;
+  latestTaskHealth: TaskExecutionHealth | null;
+  latestNonFatalSummary: string | null;
   latestFailureSummary: string | null;
+  latestFatalSummary: string | null;
   actionableHint: string | null;
 }
 
@@ -150,6 +163,9 @@ function toDiagnosisTaskSummary(task: TaskSnapshot): DiagnosisTaskSummary {
     taskId: task.taskId,
     title: task.title,
     state: task.state,
+    executionHealth: task.executionHealth,
+    runtimeSignals: task.runtimeSignals,
+    providerEvidence: task.providerEvidence ?? null,
     updatedAt: task.updatedAt,
     summary: task.summary,
     errorCode: task.errorCode ?? null,
@@ -189,6 +205,20 @@ function buildActionableHint(
     );
   }
 
+  if (latestTask?.state === "completed" && latestTask.executionHealth === "degraded") {
+    return localizedText(
+      "The latest task completed, but runtime warnings remain. Review the degraded-runtime summary before trusting the result fully.",
+      "\u6700\u8fd1\u4efb\u52a1\u5df2\u5b8c\u6210\uff0c\u4f46\u8fd0\u884c\u65f6\u4ecd\u6709\u964d\u7ea7\u544a\u8b66\uff0c\u8bf7\u5148\u67e5\u770b\u8be6\u7ec6\u6458\u8981\u518d\u5224\u65ad\u7ed3\u679c\u3002"
+    );
+  }
+
+  if (latestTask?.state === "completed" && latestTask.executionHealth === "warning") {
+    return localizedText(
+      "The latest task completed with warnings. Review them if the result looks incomplete.",
+      "\u6700\u8fd1\u4efb\u52a1\u5df2\u5b8c\u6210\uff0c\u4f46\u5e26\u6709\u544a\u8b66\uff0c\u5982\u679c\u7ed3\u679c\u4e0d\u5b8c\u6574\u8bf7\u5148\u67e5\u770b\u8fd9\u4e9b\u544a\u8b66\u3002"
+    );
+  }
+
   if (latestTask?.state === "waiting_decision") {
     return localizedText(
       "The latest task is waiting for a decision. Continue it instead of starting a duplicate task.",
@@ -207,6 +237,13 @@ function buildActionableHint(
     return localizedText(
       "Resume the interrupted task before starting a new one.",
       "\u5148\u6062\u590d\u88ab\u4e2d\u65ad\u7684\u4efb\u52a1\uff0c\u518d\u51b3\u5b9a\u662f\u5426\u65b0\u5f00\u4efb\u52a1\u3002"
+    );
+  }
+
+  if (latestTask?.state === "running" && isProviderTurnStalled(latestTask)) {
+    return localizedText(
+      "The latest task reached turn.started but has not produced output. Consider retrying with a narrower prompt or wait for the provider to recover.",
+      "\u6700\u8fd1\u4efb\u52a1\u5df2\u7ecf\u5230\u8fbe turn.started \u4f46\u6ca1\u6709\u4ea7\u51fa\uff0c\u8bf7\u8003\u8651\u7f29\u5c0f\u63d0\u793a\u6216\u7b49\u5f85 provider \u6062\u590d\u3002"
     );
   }
 
@@ -369,12 +406,27 @@ export function buildOperatorStatusFromDiagnosis(
   latestTask?: TaskSnapshot | null
 ): OperatorStatusSnapshot {
   const latest = latestTask ? toDiagnosisTaskSummary(latestTask) : null;
+  const latestNonFatalSummary =
+    latest && latest.executionHealth !== "clean" && latest.state !== "failed"
+        ? summarizeRuntimeSignals(latest.runtimeSignals, false)
+      : isProviderTurnStalled(latest)
+        ? localizedText(
+            "Provider reached turn.started but did not emit output.",
+            "\u53d1\u73b0 provider \u4ec5\u5230 turn.started \uff0c\u4f46\u672a\u4ea7\u51fa\u8f93\u51fa\u3002"
+          )
+        : null;
   const latestFailureSummary =
     latest?.state === "failed"
       ? latest.errorCode
         ? `${latest.errorCode}: ${latest.error ?? latest.summary}`
         : latest.error ?? latest.summary
       : null;
+  const latestFatalSummary =
+    latest?.state === "failed"
+      ? latestFailureSummary
+      : latest
+        ? summarizeRuntimeSignals(latest.runtimeSignals, true)
+        : null;
 
   return {
     gatewayUrl: diagnosis.gatewayUrl,
@@ -386,7 +438,10 @@ export function buildOperatorStatusFromDiagnosis(
     findings: diagnosis.findings,
     latestTask: latest,
     latestTaskState: latest?.state ?? null,
+    latestTaskHealth: latest?.executionHealth ?? null,
+    latestNonFatalSummary,
     latestFailureSummary,
+    latestFatalSummary,
     actionableHint: buildActionableHint(diagnosis, latest),
   };
 }
@@ -419,6 +474,9 @@ export async function runConnectionDiagnosis(
     if (snapshot.latestFailureSummary) {
       output.appendLine(`      ${snapshot.latestFailureSummary}`);
     }
+    if (snapshot.latestNonFatalSummary && snapshot.latestTask.state !== "failed") {
+      output.appendLine(`      ${snapshot.latestNonFatalSummary}`);
+    }
   }
   if (snapshot.actionableHint) {
     output.appendLine(`      ${snapshot.actionableHint}`);
@@ -435,4 +493,31 @@ export async function runConnectionDiagnosis(
   if (action === openLogText) {
     output.show(true);
   }
+}
+
+function summarizeRuntimeSignals(signals: TaskRuntimeSignal[], fatalOnly: boolean): string | null {
+  const filtered = signals.filter((signal) => (fatalOnly ? signal.severity === "fatal" : signal.severity !== "fatal"));
+  if (!filtered.length) {
+    return null;
+  }
+
+  return filtered
+    .map((signal) => `${signal.code}: ${signal.summary}${signal.count > 1 ? ` x${signal.count}` : ""}`)
+    .join("; ");
+}
+
+function isProviderTurnStalled(task: DiagnosisTaskSummary | null): boolean {
+  if (!task) {
+    return false;
+  }
+  const evidence = task.providerEvidence;
+  if (!evidence) {
+    return false;
+  }
+  return (
+    evidence.sawTurnStarted &&
+    !evidence.sawTurnCompleted &&
+    !evidence.lastAgentMessagePreview &&
+    evidence.finalMessageSource === "none"
+  );
 }

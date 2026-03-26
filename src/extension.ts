@@ -8,11 +8,12 @@ import { collectOperatorStatus, runConnectionDiagnosis, isCallableWithLocalConfi
 import { refreshDashboardPanel, showDashboardPanel } from "./dashboard-panel";
 import { GatewayClient, type ConnectionState } from "./gateway-client";
 import { getCurrentLocale, t } from "./i18n";
-import { getOutputChannel, log } from "./logger";
+import { getOutputChannel, log, logError } from "./logger";
 import { getProviderStatusLabel } from "./provider-status";
 import { AgentRouteService } from "./routing/service";
 import { showSettingsPanel } from "./settings-panel";
 import { ClawDriveStatusBar } from "./status-bar";
+import { runSelftest } from "./selftest-runner";
 import { TaskService } from "./tasks/service";
 
 class ClawDriveRuntime {
@@ -50,7 +51,10 @@ class ClawDriveRuntime {
   }
 
   async initialize(): Promise<void> {
-    await this.taskService.initialize();
+    await this.taskService.initialize({ probeProvider: false });
+    void this.taskService.refreshProviderStatus().catch((error) => {
+      logError(`Provider probe during startup failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
     if (getConfig().autoConnect) {
       this.connect();
     }
@@ -165,6 +169,10 @@ class ClawDriveRuntime {
     await this.activityProvider.openResult(taskId);
   }
 
+  async selftest(): Promise<void> {
+    await runSelftest(this.routeService, this.taskService);
+  }
+
   getDashboardSnapshot() {
     const cfg = getConfig();
     return {
@@ -223,6 +231,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
       });
     }),
+    vscode.commands.registerCommand("clawdrive.selftest", () => runtime.selftest()),
     vscode.commands.registerCommand("clawdrive.activity.refresh", () => runtime.getActivityProvider().refresh()),
     vscode.commands.registerCommand("clawdrive.activity.openResult", (taskId: string) => runtime.openTaskResult(taskId)),
     vscode.commands.registerCommand("clawdrive.activity.continue", (taskId: string) => runtime.continueTask(taskId)),

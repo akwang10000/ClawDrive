@@ -10,7 +10,7 @@ export function makeConfig(overrides?: Partial<ClawDriveConfig>): ClawDriveConfi
     gatewayPort: 18789,
     gatewayTls: false,
     gatewayToken: "token",
-    autoConnect: true,
+    autoConnect: false,
     displayName: "ClawDrive",
     providerEnabled: true,
     providerKind: "codex",

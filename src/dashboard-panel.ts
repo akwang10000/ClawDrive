@@ -339,10 +339,12 @@ function getHtml(cspSource: string, nonce: string): string {
       pillConnecting: { "zh-CN": "Gateway \\u8fde\\u63a5\\u4e2d", "en": "Gateway Connecting" },
       pillDisconnected: { "zh-CN": "Gateway \\u672a\\u8fde\\u63a5", "en": "Gateway Disconnected" },
       valueConnected: { "zh-CN": "\\u5df2\\u8fde\\u63a5", "en": "Connected" },
+      valueConnecting: { "zh-CN": "\\u8fde\\u63a5\\u4e2d", "en": "Connecting" },
       valueDisconnected: { "zh-CN": "\\u672a\\u8fde\\u63a5", "en": "Disconnected" },
       valueReady: { "zh-CN": "\\u5c31\\u7eea", "en": "Ready" },
       valueBlocked: { "zh-CN": "\\u53d7\\u9650", "en": "Blocked" },
       valueNotReady: { "zh-CN": "\\u672a\\u63a5\\u5165", "en": "Not Ready" },
+      valuePending: { "zh-CN": "\\u5f85\\u786e\\u8ba4", "en": "Pending" },
       unknownError: { "zh-CN": "\\u672a\\u77e5\\u9519\\u8bef", "en": "Unknown error" }
     };
     function tr(key) {
@@ -372,21 +374,31 @@ function getHtml(cspSource: string, nonce: string): string {
     function renderSnapshot(snapshot) {
       const pill = document.getElementById("connectionPill");
       const connectButton = document.getElementById("connect");
+      let connectionValue = tr("valueDisconnected");
+      let connectionClass = "warn";
       if (snapshot.connectionState === "connected") {
         pill.textContent = tr("pillConnected");
         pill.className = "pill ok";
         connectButton.textContent = tr("reconnect");
+        connectionValue = tr("valueConnected");
+        connectionClass = "ok";
       } else if (snapshot.connectionState === "connecting") {
         pill.textContent = tr("pillConnecting");
         pill.className = "pill warn";
         connectButton.textContent = tr("reconnect");
+        connectionValue = tr("valueConnecting");
+        connectionClass = "warn";
       } else {
         pill.textContent = tr("pillDisconnected");
         pill.className = "pill";
         connectButton.textContent = tr("connect");
       }
-      setStatus("connectedValue", snapshot.connected ? tr("valueConnected") : tr("valueDisconnected"), snapshot.connected ? "ok" : "warn");
-      setStatus("callableValue", snapshot.callable ? tr("valueReady") : tr("valueBlocked"), snapshot.callable ? "ok" : "warn");
+      setStatus("connectedValue", connectionValue, connectionClass);
+      if (snapshot.connectionState === "connected") {
+        setStatus("callableValue", snapshot.callable ? tr("valueReady") : tr("valueBlocked"), snapshot.callable ? "ok" : "warn");
+      } else {
+        setStatus("callableValue", tr("valuePending"), "muted");
+      }
       setStatus("providerValue", snapshot.providerStatus || tr("valueNotReady"), "muted");
       document.getElementById("displayName").textContent = snapshot.displayName;
       document.getElementById("gatewayUrl").textContent = snapshot.gatewayUrl;

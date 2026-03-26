@@ -10,6 +10,7 @@ import type { ProviderProbeResult, TaskProvider } from "./provider";
 import { TaskStorage } from "./storage";
 import {
   taskApprovalSummary,
+  providerStatusChecking,
   providerStatusDisabled,
   providerStatusError,
   providerStatusMissing,
@@ -28,14 +29,17 @@ import {
 import type {
   ProviderStatusInfo,
   TaskContinuationCandidate,
+  TaskExecutionHealth,
   TaskEventRecord,
   TaskListParams,
   TaskMode,
+  TaskProviderEvidence,
   TaskRespondParams,
   TaskResponseInput,
   TaskResultPayload,
   TaskRunResult,
   TaskApprovalRequest,
+  TaskRuntimeSignal,
   TaskSnapshot,
   TaskState,
   TaskStartParams,
@@ -55,6 +59,10 @@ interface TaskServiceOptions {
   now?: () => string;
 }
 
+interface TaskServiceInitializeOptions {
+  probeProvider?: boolean;
+}
+
 interface ActiveRun {
   taskId: string;
   controller: AbortController;
@@ -72,11 +80,7 @@ export class TaskService implements vscode.Disposable {
   private readonly tasks = new Map<string, TaskSnapshot>();
   private readonly pendingRuns = new Map<string, RunTrigger>();
   private activeRun: ActiveRun | null = null;
-  private providerStatus: ProviderStatusInfo = this.mapProbeToStatus({
-    ready: false,
-    state: "disabled",
-    detail: "Provider disabled.",
-  });
+  private providerStatus: ProviderStatusInfo;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -94,6 +98,13 @@ export class TaskService implements vscode.Disposable {
     this.applyExecutor = this.options.createApplyExecutor();
     this.storage = this.createStorage(cfg.tasksHistoryLimit);
     this.provider = this.createProvider();
+    this.providerStatus = cfg.providerEnabled
+      ? { ready: false, state: "checking", ...providerStatusChecking() }
+      : this.mapProbeToStatus({
+          ready: false,
+          state: "disabled",
+          detail: "Provider disabled.",
+        });
   }
 
   get onDidChange(): vscode.Event<void> {
@@ -104,7 +115,7 @@ export class TaskService implements vscode.Disposable {
     return this.lifecycleEmitter.event;
   }
 
-  async initialize(): Promise<void> {
+  async initialize(options?: TaskServiceInitializeOptions): Promise<void> {
     await this.storage.initialize();
     for (const snapshot of await this.storage.listSnapshots()) {
       const normalized = this.normalizeLoadedSnapshot(snapshot);
@@ -113,12 +124,15 @@ export class TaskService implements vscode.Disposable {
         normalized.summary = taskInterruptedSummary();
         normalized.updatedAt = this.options.now();
         normalized.errorCode = null;
+        normalized.executionHealth = this.deriveExecutionHealth(normalized.runtimeSignals, "interrupted");
         await this.storage.saveSnapshot(normalized);
         await this.appendEvent(normalized, "interrupted", normalized.summary);
       }
       this.tasks.set(normalized.taskId, normalized);
     }
-    await this.refreshProviderStatus();
+    if (options?.probeProvider ?? true) {
+      await this.refreshProviderStatus();
+    }
     this.emitter.fire();
   }
 
@@ -160,12 +174,18 @@ export class TaskService implements vscode.Disposable {
     const snapshot = this.getTask(taskId);
     return {
       snapshot,
+      executionHealth: snapshot.executionHealth,
+      runtimeSignals: snapshot.runtimeSignals,
       approval: snapshot.approval,
+      providerEvidence: snapshot.providerEvidence,
       events: await this.storage.readEvents(taskId),
     };
   }
 
   async startTask(params: TaskStartParams): Promise<TaskSnapshot> {
+    if (this.providerStatus.state === "checking") {
+      await this.refreshProviderStatus();
+    }
     this.ensureProviderReady();
     const prompt = params.prompt?.trim();
     if (!prompt) {
@@ -190,6 +210,8 @@ export class TaskService implements vscode.Disposable {
       updatedAt: now,
       summary: taskQueuedSummary(params.mode),
       lastOutput: null,
+      executionHealth: "clean",
+      runtimeSignals: [],
       decision: null,
       approval: null,
       error: null,
@@ -197,6 +219,7 @@ export class TaskService implements vscode.Disposable {
       providerKind: this.provider.kind,
       providerSessionId: null,
       resultSummary: null,
+      providerEvidence: null,
     };
 
     this.tasks.set(snapshot.taskId, snapshot);
@@ -236,6 +259,7 @@ export class TaskService implements vscode.Disposable {
     snapshot.summary = taskQueuedSummary(snapshot.mode);
     snapshot.error = null;
     snapshot.errorCode = null;
+    snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "queued");
     snapshot.updatedAt = this.options.now();
     this.pendingRuns.set(snapshot.taskId, { kind: "resume", response, fromState });
     await this.storage.saveSnapshot(snapshot);
@@ -258,6 +282,7 @@ export class TaskService implements vscode.Disposable {
     snapshot.state = "cancelled";
     snapshot.summary = taskCancelledSummary();
     snapshot.errorCode = null;
+    snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "cancelled");
     snapshot.updatedAt = this.options.now();
     this.pendingRuns.delete(taskId);
     await this.storage.saveSnapshot(snapshot);
@@ -375,6 +400,7 @@ export class TaskService implements vscode.Disposable {
     snapshot.summary = taskStartedSummary(snapshot.mode);
     snapshot.error = null;
     snapshot.errorCode = null;
+    snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "running");
     snapshot.updatedAt = this.options.now();
     await this.storage.saveSnapshot(snapshot);
     await this.appendEvent(snapshot, trigger.kind === "resume" ? "resumed" : "started", snapshot.summary);
@@ -405,6 +431,30 @@ export class TaskService implements vscode.Disposable {
           void this.storage.saveSnapshot(snapshot);
           this.tasks.set(snapshot.taskId, snapshot);
           void this.appendEvent(snapshot, "output", "Task output updated.", output);
+          this.emitter.fire();
+        },
+        onRuntimeSignal: (
+          signal: Omit<TaskRuntimeSignal, "count" | "lastSeenAt">,
+          rawDetail?: string
+        ) => {
+          const now = this.options.now();
+          snapshot.runtimeSignals = this.mergeRuntimeSignal(snapshot.runtimeSignals, {
+            ...signal,
+            count: 1,
+            lastSeenAt: now,
+          });
+          snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, snapshot.state);
+          snapshot.updatedAt = now;
+          void this.storage.saveSnapshot(snapshot);
+          this.tasks.set(snapshot.taskId, snapshot);
+          void this.appendEvent(snapshot, "runtime_signal", signal.summary, rawDetail ?? signal.detail);
+          this.emitter.fire();
+        },
+        onEvidence: (evidence: Partial<TaskProviderEvidence>) => {
+          snapshot.providerEvidence = this.mergeProviderEvidence(snapshot.providerEvidence, evidence);
+          snapshot.updatedAt = this.options.now();
+          void this.storage.saveSnapshot(snapshot);
+          this.tasks.set(snapshot.taskId, snapshot);
           this.emitter.fire();
         },
       };
@@ -452,6 +502,7 @@ export class TaskService implements vscode.Disposable {
         snapshot.state = "cancelled";
         snapshot.summary = taskCancelledSummary();
         snapshot.errorCode = null;
+        snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "cancelled");
         snapshot.updatedAt = this.options.now();
         await this.storage.saveSnapshot(snapshot);
         await this.appendEvent(snapshot, "cancelled", snapshot.summary);
@@ -459,6 +510,7 @@ export class TaskService implements vscode.Disposable {
         snapshot.state = "interrupted";
         snapshot.summary = taskInterruptedSummary();
         snapshot.errorCode = null;
+        snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "interrupted");
         snapshot.updatedAt = this.options.now();
         await this.storage.saveSnapshot(snapshot);
         await this.appendEvent(snapshot, "interrupted", snapshot.summary);
@@ -479,6 +531,7 @@ export class TaskService implements vscode.Disposable {
         snapshot.errorCode = code;
         snapshot.error = message;
         snapshot.summary = taskFailedSummary(message);
+        snapshot.executionHealth = "failed";
         snapshot.updatedAt = this.options.now();
         await this.storage.saveSnapshot(snapshot);
         await this.appendEvent(snapshot, "failed", snapshot.summary, `${code}: ${message}`);
@@ -496,6 +549,7 @@ export class TaskService implements vscode.Disposable {
     snapshot.resultSummary = result.summary;
     snapshot.error = null;
     snapshot.errorCode = null;
+    snapshot.providerEvidence = this.mergeProviderEvidence(snapshot.providerEvidence, result.providerEvidence ?? null);
     snapshot.updatedAt = this.options.now();
 
     if (result.decision) {
@@ -503,12 +557,14 @@ export class TaskService implements vscode.Disposable {
       snapshot.decision = result.decision;
       snapshot.approval = null;
       snapshot.summary = taskWaitingSummary(result.decision.options.length);
+      snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "waiting_decision");
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "waiting_decision", snapshot.summary, result.decision.summary);
     } else if (result.approval) {
       snapshot.state = "waiting_approval";
       snapshot.approval = result.approval;
       snapshot.summary = taskWaitingApprovalSummary(result.approval.operations.length);
+      snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "waiting_approval");
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "waiting_approval", snapshot.summary, taskApprovalSummary(result.approval));
     } else {
@@ -518,6 +574,7 @@ export class TaskService implements vscode.Disposable {
         snapshot.approval = null;
       }
       snapshot.summary = result.summary;
+      snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "completed");
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "completed", snapshot.summary);
     }
@@ -610,6 +667,8 @@ export class TaskService implements vscode.Disposable {
   private normalizeLoadedSnapshot(snapshot: TaskSnapshot): TaskSnapshot {
     return {
       ...snapshot,
+      executionHealth: snapshot.executionHealth ?? this.deriveExecutionHealth(snapshot.runtimeSignals ?? [], snapshot.state),
+      runtimeSignals: snapshot.runtimeSignals ?? [],
       approval: snapshot.approval ?? null,
       errorCode: snapshot.errorCode ?? null,
       resultSummary: snapshot.resultSummary ?? null,
@@ -617,6 +676,7 @@ export class TaskService implements vscode.Disposable {
       decision: snapshot.decision ?? null,
       lastOutput: snapshot.lastOutput ?? null,
       error: snapshot.error ?? null,
+      providerEvidence: snapshot.providerEvidence ?? null,
     };
   }
 
@@ -626,6 +686,7 @@ export class TaskService implements vscode.Disposable {
       snapshot.summary = taskRejectedSummary();
       snapshot.error = null;
       snapshot.errorCode = null;
+      snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "cancelled");
       snapshot.updatedAt = this.options.now();
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "rejected", snapshot.summary, snapshot.approval?.summary);
@@ -642,6 +703,7 @@ export class TaskService implements vscode.Disposable {
     snapshot.summary = taskQueuedSummary(snapshot.mode);
     snapshot.error = null;
     snapshot.errorCode = null;
+    snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "queued");
     snapshot.updatedAt = this.options.now();
     this.pendingRuns.set(snapshot.taskId, { kind: "apply_approval" });
     await this.storage.saveSnapshot(snapshot);
@@ -657,5 +719,59 @@ export class TaskService implements vscode.Disposable {
       throw commandFailure("APPLY_PRECONDITION_FAILED", `Task ${snapshot.taskId} does not have an approval payload.`);
     }
     return snapshot.approval;
+  }
+
+  private mergeRuntimeSignal(existing: TaskRuntimeSignal[], incoming: TaskRuntimeSignal): TaskRuntimeSignal[] {
+    const index = existing.findIndex(
+      (item) =>
+        item.code === incoming.code && item.severity === incoming.severity && item.summary === incoming.summary
+    );
+    if (index < 0) {
+      return [...existing, incoming];
+    }
+
+    const merged = [...existing];
+    const current = merged[index];
+    merged[index] = {
+      ...current,
+      detail: incoming.detail ?? current.detail,
+      count: current.count + 1,
+      lastSeenAt: incoming.lastSeenAt,
+    };
+    return merged;
+  }
+
+  private mergeProviderEvidence(
+    existing: TaskProviderEvidence | null,
+    incoming: Partial<TaskProviderEvidence> | null | undefined
+  ): TaskProviderEvidence | null {
+    if (!incoming) {
+      return existing ?? null;
+    }
+    return {
+      sawTurnStarted: incoming.sawTurnStarted ?? existing?.sawTurnStarted ?? false,
+      sawTurnCompleted: incoming.sawTurnCompleted ?? existing?.sawTurnCompleted ?? false,
+      outputFileStatus: incoming.outputFileStatus ?? existing?.outputFileStatus ?? "not_used",
+      finalMessageSource: incoming.finalMessageSource ?? existing?.finalMessageSource ?? "none",
+      lastAgentMessagePreview:
+        incoming.lastAgentMessagePreview ?? existing?.lastAgentMessagePreview ?? null,
+      stdoutEventTail: incoming.stdoutEventTail ?? existing?.stdoutEventTail ?? [],
+    };
+  }
+
+  private deriveExecutionHealth(
+    runtimeSignals: TaskRuntimeSignal[],
+    state: TaskState
+  ): TaskExecutionHealth {
+    if (state === "failed") {
+      return "failed";
+    }
+    if (runtimeSignals.some((signal) => signal.severity === "degraded" || signal.severity === "fatal")) {
+      return "degraded";
+    }
+    if (runtimeSignals.some((signal) => signal.severity === "noise")) {
+      return "warning";
+    }
+    return "clean";
   }
 }

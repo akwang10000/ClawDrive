@@ -1,6 +1,15 @@
 import * as vscode from "vscode";
 import { getOutputChannel } from "./logger";
-import { taskApprovalTitle, taskApprovalSummary, taskResultTitle, taskStateLabel } from "./tasks/text";
+import {
+  taskApprovalTitle,
+  taskApprovalSummary,
+  taskCompletedWithHealthSummary,
+  taskExecutionHealthLabel,
+  taskResultTitle,
+  taskRuntimeSignalSummary,
+  taskRuntimeSignalsTitle,
+  taskStateLabel,
+} from "./tasks/text";
 import type { TaskService } from "./tasks/service";
 import type { ApplyOperation, TaskDecisionOption, TaskSnapshot } from "./tasks/types";
 
@@ -8,8 +17,8 @@ class TaskTreeItem extends vscode.TreeItem {
   constructor(readonly snapshot: TaskSnapshot) {
     super(snapshot.title, vscode.TreeItemCollapsibleState.None);
     this.id = snapshot.taskId;
-    this.description = taskStateLabel(snapshot.state);
-    this.tooltip = `${snapshot.summary}\n${snapshot.updatedAt}`;
+    this.description = `${taskStateLabel(snapshot.state)}${healthCue(snapshot)}`;
+    this.tooltip = buildTooltip(snapshot);
     this.contextValue = `task:${snapshot.state}`;
     this.iconPath = this.iconForState(snapshot.state);
     this.command = {
@@ -67,8 +76,31 @@ export class ClawDriveActivityProvider implements vscode.TreeDataProvider<TaskTr
     output.appendLine("");
     output.appendLine(taskResultTitle(result.snapshot.title, result.snapshot.state));
     output.appendLine(result.snapshot.summary);
+    output.appendLine(`Execution health: ${taskExecutionHealthLabel(result.executionHealth)}`);
+    const completedHealthSummary = taskCompletedWithHealthSummary(result.executionHealth);
+    if (completedHealthSummary && result.snapshot.state === "completed") {
+      output.appendLine(completedHealthSummary);
+    }
     if (result.snapshot.errorCode) {
       output.appendLine(`Error code: ${result.snapshot.errorCode}`);
+    }
+    if (result.providerEvidence) {
+      output.appendLine("Provider evidence:");
+      output.appendLine(
+        `- turnStarted=${result.providerEvidence.sawTurnStarted} turnCompleted=${result.providerEvidence.sawTurnCompleted} outputFile=${result.providerEvidence.outputFileStatus} source=${result.providerEvidence.finalMessageSource}`
+      );
+      if (result.providerEvidence.lastAgentMessagePreview) {
+        output.appendLine(`- lastAgentMessage: ${result.providerEvidence.lastAgentMessagePreview}`);
+      }
+      if (result.providerEvidence.stdoutEventTail.length) {
+        output.appendLine(`- stdout tail: ${result.providerEvidence.stdoutEventTail.join(", ")}`);
+      }
+    }
+    if (result.runtimeSignals.length) {
+      output.appendLine(taskRuntimeSignalsTitle());
+      for (const signal of result.runtimeSignals) {
+        output.appendLine(`- ${taskRuntimeSignalSummary(signal)} [${signal.code}]`);
+      }
     }
     if (result.snapshot.decision) {
       output.appendLine("Decision:");
@@ -147,4 +179,26 @@ export class ClawDriveActivityProvider implements vscode.TreeDataProvider<TaskTr
       ? `- write_file ${operation.path}`
       : `- replace_text ${operation.path}`;
   }
+}
+
+function healthCue(snapshot: TaskSnapshot): string {
+  if (snapshot.executionHealth === "warning") {
+    return " !";
+  }
+  if (snapshot.executionHealth === "degraded") {
+    return " ~";
+  }
+  return "";
+}
+
+function buildTooltip(snapshot: TaskSnapshot): string {
+  const lines = [
+    snapshot.summary,
+    `Health: ${taskExecutionHealthLabel(snapshot.executionHealth)}`,
+    snapshot.updatedAt,
+  ];
+  for (const signal of snapshot.runtimeSignals.slice(0, 3)) {
+    lines.push(`- ${taskRuntimeSignalSummary(signal)}`);
+  }
+  return lines.join("\n");
 }

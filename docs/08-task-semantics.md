@@ -19,6 +19,7 @@ Each long-running task has:
 - one `taskId`
 - one `mode`
 - one stable lifecycle
+- one execution-health layer
 - resumable turns rather than one opaque provider run
 - decision and approval pauses as explicit states
 
@@ -50,6 +51,15 @@ Current states:
 - `interrupted`
 
 These states are intentionally distinct in storage, UI, and OpenClaw-facing reporting.
+
+The current implementation also tracks execution health independently from lifecycle:
+
+- `clean`
+- `warning`
+- `degraded`
+- `failed`
+
+This lets ClawDrive distinguish "completed with warnings" from true task failure.
 
 ## Turn Model
 
@@ -107,6 +117,7 @@ Current guarantees:
 
 - task snapshots are persisted
 - event history is persisted
+- runtime signal summaries are persisted on the snapshot
 - terminal history is pruned by a limit
 - a task that was `running` during shutdown is restored as `interrupted`
 - a task that was `waiting_decision` or `waiting_approval` remains resumable after restart
@@ -160,3 +171,11 @@ Current reality:
 - Codex CLI is the only implemented provider
 
 That is acceptable as long as the public task contract does not need redesign to add more providers later.
+
+The current provider runtime model also distinguishes between:
+
+- non-fatal runtime noise
+- degraded-but-successful execution
+- fatal execution failure
+
+Those runtime signals are surfaced through task results and diagnosis without changing the core task lifecycle.

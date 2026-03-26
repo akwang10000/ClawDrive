@@ -20,6 +20,7 @@ The current rewrite distinguishes:
 - `callable`: the Gateway allowlist and node command surface permit invocation
 - `provider ready`: the configured provider is enabled and locally runnable
 - task state: `queued`, `running`, `waiting_decision`, `waiting_approval`, `completed`, `failed`, `cancelled`, `interrupted`
+- task execution health: `clean`, `warning`, `degraded`, `failed`
 
 These should not be collapsed into one generic "connected" label.
 
@@ -33,6 +34,7 @@ The current repository includes:
 - `ClawDrive: Disconnect`
 - `ClawDrive: Show Status`
 - `ClawDrive: Diagnose Connection`
+- `ClawDrive: Run Selftest`
 - `ClawDrive Activity`
 - `ClawDrive` output log
 
@@ -46,10 +48,24 @@ The dashboard intentionally keeps only the most necessary actions:
 
 1. Open `ClawDrive: Settings`.
 2. Configure Gateway host, port, token, and TLS.
-3. Leave auto-connect enabled unless manual connection is required.
+3. Expect auto-connect to be off by default for new installs.
 4. Configure provider settings if you want long tasks or route-backed analysis/planning/apply.
-5. Save settings and let the extension connect.
-6. Use `Dashboard`, `Activity`, or `Diagnose Connection` only when you need verification or recovery.
+5. Save settings, then connect manually unless you explicitly re-enable auto-connect.
+6. Use `Dashboard`, `Activity`, or `Diagnose Connection` when you need verification or recovery.
+
+## Current Activation Policy
+
+The current extension activation policy is intentionally simple:
+
+- activate on `onStartupFinished`
+- do not duplicate that with separate command or view activation events
+- keep startup light enough that early activation is acceptable
+
+This means:
+
+- the extension is expected to be loaded once VS Code startup settles
+- command and view availability do not depend on a second lazy activation path
+- connection is still a separate decision, especially now that auto-connect defaults to off
 
 If the Gateway uses `gateway.nodes.allowCommands`, keep the allowlist aligned with the extension command surface.
 
@@ -171,6 +187,8 @@ Current diagnosis and status summaries are built around:
 - `callable`
 - `provider ready`
 - latest task state
+- latest task health
+- latest non-fatal runtime summary
 - latest failure summary
 - actionable next hint
 
@@ -192,6 +210,13 @@ Current product expectation:
 - diagnosis should preserve the warning as evidence
 - non-fatal stderr noise should not be treated as a hard user-facing failure by default
 
+In practice, operator-facing output should now distinguish:
+
+- success with no issues
+- success with warnings
+- success with degraded runtime
+- true task failure
+
 ## Verified Current Flow
 
 The currently verified operator flow is:
@@ -202,3 +227,4 @@ The currently verified operator flow is:
 4. Trigger a direct read command such as `vscode.workspace.info`.
 5. Trigger a routed request such as `vscode.agent.route`.
 6. Observe task progress or result from OpenClaw, the activity view, or the output log.
+7. Optionally run `npm run selftest` to exercise common flows and collect `selftest-report.json`.

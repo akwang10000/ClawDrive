@@ -1,5 +1,12 @@
 import { getCurrentLocale } from "../i18n";
-import type { TaskApprovalRequest, TaskDecisionOption, TaskMode, TaskState } from "./types";
+import type {
+  TaskApprovalRequest,
+  TaskDecisionOption,
+  TaskExecutionHealth,
+  TaskMode,
+  TaskRuntimeSignal,
+  TaskState,
+} from "./types";
 
 function isEnglish(): boolean {
   return getCurrentLocale() === "en";
@@ -18,6 +25,22 @@ export function providerStatusDisabled(): { label: string; message: string; deta
     label: "\u672A\u542F\u7528",
     message: "Provider \u72B6\u6001\uff1a\u672A\u542F\u7528\u3002",
     detail: "\u5C06 clawdrive.provider.enabled \u8BBE\u4E3A true \u540E\u624D\u80FD\u542F\u7528 Codex \u4EFB\u52A1\u6267\u884C\u3002",
+  };
+}
+
+export function providerStatusChecking(): { label: string; message: string; detail: string } {
+  if (isEnglish()) {
+    return {
+      label: "Checking...",
+      message: "Provider status: checking.",
+      detail: "Provider readiness has not been checked yet in this session.",
+    };
+  }
+
+  return {
+    label: "\u68C0\u67E5\u4E2D",
+    message: "Provider \u72B6\u6001\uff1A\u68C0\u67E5\u4E2D\u3002",
+    detail: "当前会话尚未完成 provider 就绪探测。",
   };
 }
 
@@ -112,6 +135,22 @@ export function taskStateLabel(state: TaskState): string {
   return isEnglish() ? en[state] : zh[state];
 }
 
+export function taskExecutionHealthLabel(health: TaskExecutionHealth): string {
+  const zh: Record<TaskExecutionHealth, string> = {
+    clean: "\u6B63\u5E38",
+    warning: "\u5E26\u544A\u8B66",
+    degraded: "\u964D\u7EA7\u8FD0\u884C",
+    failed: "\u5DF2\u5931\u8D25",
+  };
+  const en: Record<TaskExecutionHealth, string> = {
+    clean: "Clean",
+    warning: "Warnings",
+    degraded: "Degraded",
+    failed: "Failed",
+  };
+  return isEnglish() ? en[health] : zh[health];
+}
+
 export function taskQueuedSummary(mode: TaskMode): string {
   return isEnglish()
     ? `${taskModeLabel(mode)} task queued.`
@@ -158,6 +197,18 @@ export function taskFailedSummary(message: string): string {
   return isEnglish() ? `Task failed: ${message}` : `\u4EFB\u52A1\u5931\u8D25\uff1A${message}`;
 }
 
+export function taskCompletedWithHealthSummary(health: TaskExecutionHealth): string | null {
+  if (health === "warning") {
+    return isEnglish() ? "Completed with warnings." : "\u4EFB\u52A1\u5DF2\u5B8C\u6210\uff0C\u4F46\u5305\u542B\u544A\u8B66\u3002";
+  }
+  if (health === "degraded") {
+    return isEnglish()
+      ? "Completed with degraded runtime."
+      : "\u4EFB\u52A1\u5DF2\u5B8C\u6210\uff0C\u4F46\u8FD0\u884C\u8FC7\u7A0B\u6709\u964D\u7EA7\u60C5\u51B5\u3002";
+  }
+  return null;
+}
+
 export function taskResumePrompt(option?: TaskDecisionOption, message?: string): string {
   if (option) {
     return isEnglish()
@@ -186,6 +237,15 @@ export function taskApprovalSummary(approval: TaskApprovalRequest): string {
   return isEnglish()
     ? `${approval.summary} (${approval.operations.length} operation(s))`
     : `${approval.summary}\uFF08${approval.operations.length} \u4E2A\u64CD\u4F5C\uFF09`;
+}
+
+export function taskRuntimeSignalsTitle(): string {
+  return isEnglish() ? "Runtime signals:" : "\u8FD0\u884C\u65F6\u4FE1\u53F7\uff1A";
+}
+
+export function taskRuntimeSignalSummary(signal: TaskRuntimeSignal): string {
+  const countSuffix = signal.count > 1 ? ` x${signal.count}` : "";
+  return `${signal.summary}${countSuffix}`;
 }
 
 export function taskResultTitle(title: string, state: TaskState): string {

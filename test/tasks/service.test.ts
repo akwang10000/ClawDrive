@@ -92,6 +92,59 @@ test("TaskService drives waiting_decision -> respond -> completed", async () => 
   assert.ok(result.events.some((event) => event.type === "completed"));
 });
 
+test("TaskService returns provider evidence through task.result", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-provider-evidence");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: true,
+        outputFileStatus: "empty",
+        lastAgentMessagePreview: "{\"summary\":\"Choose a path.\"}",
+        stdoutEventTail: ["thread.started", "turn.started", "item.completed:agent_message", "turn.completed"],
+      });
+      return {
+        summary: "Choose a path.",
+        output: "option_a: A\noption_b: B",
+        decision: {
+          summary: "Choose a path.",
+          recommendedOptionId: "option_a",
+          options: [
+            { id: "option_a", title: "A", summary: "Preferred", recommended: true },
+            { id: "option_b", title: "B", summary: "Fallback", recommended: false },
+          ],
+        },
+        providerEvidence: {
+          finalMessageSource: "stream_capture",
+        },
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "give me two options", mode: "plan" });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision");
+  const result = await service.getTaskResult(waiting.taskId);
+  assert.equal(result.providerEvidence?.finalMessageSource, "stream_capture");
+  assert.equal(result.providerEvidence?.outputFileStatus, "empty");
+  assert.deepEqual(result.providerEvidence?.stdoutEventTail, [
+    "thread.started",
+    "turn.started",
+    "item.completed:agent_message",
+    "turn.completed",
+  ]);
+});
+
 test("TaskService restore converts running tasks to interrupted", async () => {
   const rootPath = await makeTempDir("clawdrive-task-restore");
   setWorkspaceRoot(rootPath);
@@ -252,6 +305,173 @@ test("TaskService rejects apply approval without modifying files", async () => {
   assert.equal(rejected.summary, "Apply request rejected.");
 });
 
+test("TaskService collapses repeated runtime warnings and completes with warning health", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-runtime-warning");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_RUNTIME_HELPER_WARNING",
+          severity: "noise",
+          summary: "Provider emitted a non-fatal helper or startup warning.",
+          detail: "helper warning",
+        },
+        "helper warning"
+      );
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_RUNTIME_HELPER_WARNING",
+          severity: "noise",
+          summary: "Provider emitted a non-fatal helper or startup warning.",
+          detail: "helper warning",
+        },
+        "helper warning"
+      );
+      return {
+        summary: "Analysis completed.",
+        output: "Repository summary.",
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "explain the repo", mode: "analyze" });
+  const completed = await waitForTaskState(service, queued.taskId, "completed");
+  assert.equal(completed.executionHealth, "warning");
+  assert.equal(completed.runtimeSignals.length, 1);
+  assert.equal(completed.runtimeSignals[0].count, 2);
+
+  const result = await service.getTaskResult(completed.taskId);
+  assert.equal(result.executionHealth, "warning");
+  assert.equal(result.runtimeSignals[0].code, "PROVIDER_RUNTIME_HELPER_WARNING");
+});
+
+test("TaskService marks completed tasks as degraded when runtime fallback warnings occur", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-runtime-degraded");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_TRANSPORT_FALLBACK",
+          severity: "degraded",
+          summary: "Provider transport fell back to a slower or narrower runtime path.",
+          detail: "falling back to HTTP",
+        },
+        "falling back to HTTP"
+      );
+      return {
+        summary: "Plan completed.",
+        output: "Two options ready.",
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "give me two options", mode: "plan" });
+  const completed = await waitForTaskState(service, queued.taskId, "completed");
+  assert.equal(completed.executionHealth, "degraded");
+  assert.equal(completed.runtimeSignals[0].severity, "degraded");
+});
+
+test("TaskService preserves fatal runtime signals when the provider fails", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-runtime-fatal");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_AUTH_FAILED",
+          severity: "fatal",
+          summary: "Provider authentication failed while contacting the upstream model service.",
+          detail: "401 unauthorized",
+        },
+        "401 unauthorized"
+      );
+      throw Object.assign(new Error("unexpected status 401 Unauthorized"), { code: "PROVIDER_AUTH_FAILED" });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "plan the next step", mode: "plan" });
+  const failed = await waitForTaskState(service, queued.taskId, "failed");
+  assert.equal(failed.executionHealth, "failed");
+  assert.equal(failed.errorCode, "PROVIDER_AUTH_FAILED");
+  assert.equal(failed.runtimeSignals[0].severity, "fatal");
+});
+
+test("TaskService shows degraded running health when the provider emits a stall warning before timeout", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-runtime-stall");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks, signal) {
+      callbacks.onProgress("Codex task turn started.");
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_RESULT_STALL_WARNING",
+          severity: "degraded",
+          summary: "Provider task is still running but has not produced usable output for a while.",
+          detail: "No provider output after turn start for 10s.",
+        },
+        "No provider output after turn start for 10s."
+      );
+      return await new Promise<TaskRunResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error(String(signal.reason ?? "aborted"))), { once: true });
+      });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ tasksDefaultTimeoutMs: 5_000 }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "give me two options", mode: "plan" });
+  const running = await waitForTaskCondition(
+    service,
+    queued.taskId,
+    (task) => task.state === "running" && task.executionHealth === "degraded" && task.runtimeSignals.length === 1
+  );
+  assert.equal(running.runtimeSignals[0].code, "PROVIDER_RESULT_STALL_WARNING");
+
+  await service.cancelTask(queued.taskId);
+  const cancelled = await waitForTaskState(service, queued.taskId, "cancelled");
+  assert.equal(cancelled.executionHealth, "degraded");
+});
+
 async function waitForTaskState(
   service: TaskService,
   taskId: string,
@@ -269,8 +489,25 @@ async function waitForTaskState(
   throw new Error(`Timed out waiting for task ${taskId} to reach state ${state}.`);
 }
 
+async function waitForTaskCondition(
+  service: TaskService,
+  taskId: string,
+  predicate: (task: TaskSnapshot) => boolean,
+  timeoutMs = 2_000
+): Promise<TaskSnapshot> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const task = service.getTask(taskId);
+    if (predicate(task)) {
+      return task;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for task ${taskId} to satisfy predicate.`);
+}
+
 function makeSnapshot(overrides: Partial<TaskSnapshot>): TaskSnapshot {
-  return {
+  const base: TaskSnapshot = {
     taskId: "task-1",
     title: "Analyze: repo",
     mode: "analyze",
@@ -281,6 +518,8 @@ function makeSnapshot(overrides: Partial<TaskSnapshot>): TaskSnapshot {
     updatedAt: "2026-03-21T12:00:00.000Z",
     summary: "Queued",
     lastOutput: null,
+    executionHealth: "clean",
+    runtimeSignals: [],
     decision: null,
     approval: null,
     error: null,
@@ -288,6 +527,13 @@ function makeSnapshot(overrides: Partial<TaskSnapshot>): TaskSnapshot {
     providerKind: "fake",
     providerSessionId: null,
     resultSummary: null,
+    providerEvidence: null,
+  };
+
+  return {
+    ...base,
     ...overrides,
+    executionHealth: overrides.executionHealth ?? base.executionHealth,
+    runtimeSignals: overrides.runtimeSignals ?? base.runtimeSignals,
   };
 }

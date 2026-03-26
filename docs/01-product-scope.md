@@ -33,6 +33,89 @@ The desired system behavior is:
 - Unsafe actions are gated by policy, confirmation, or allowlists.
 - Long-running agent work is represented as resumable tasks rather than one-shot command calls.
 
+## Current Mainline
+
+The current implemented mainline is narrower than the full product ambition.
+
+Today the repository is organized around this chain:
+
+- OpenClaw enters through `vscode.agent.route`
+- ClawDrive chooses between grounded inspect, `analyze`, `plan`, `apply`, `continue`, and `diagnose`
+- direct inspect uses VS Code-local read-only capabilities when possible
+- long-running reasoning and write orchestration use the stable task surface
+- activity, status, and diagnosis surfaces explain progress and failure in plain language
+
+Current grounded inspect coverage includes:
+
+- workspace info
+- file reads
+- directory listing
+- active editor
+- diagnostics
+- grounded summaries for explicit files and selected directories
+- bounded local code-location lookup for explicit tokens such as command ids or symbol names
+- grounded extension-wiring audit for `package.json`, source entrypoints, and build entrypoints
+- grounded runtime-flow audit for the `route -> task -> provider` chain
+
+Current task-backed coverage includes:
+
+- `analyze`
+- `plan`
+- `apply`
+- continuation and recovery
+- explicit approval before local file mutation
+
+Current task execution is still intentionally narrow:
+
+- one provider implementation: Codex CLI
+- local structured file mutation only
+- no direct provider-side file writes
+- no git, terminal, debug, or formatter execution
+
+## Plugin And Provider Boundary
+
+The product stays buildable only if ClawDrive and the provider keep a clear division of labor.
+
+ClawDrive should own the deterministic, local, and policy-sensitive parts:
+
+- natural-language route selection
+- grounded local inspection and evidence gathering
+- task lifecycle, persistence, and recovery
+- approval and local mutation execution
+- operator-facing diagnosis and status explanation
+
+The provider should own the reasoning-heavy parts:
+
+- broad analysis
+- planning and tradeoff generation
+- structured apply proposals
+- natural-language synthesis once the relevant evidence is available
+
+This means the product should not assume the provider can reliably self-discover workspace context through shell probing alone.
+ClawDrive is expected to supply the stable local footing first when the request can be grounded deterministically.
+
+## Scale Guard
+
+The plugin must not grow into a second full agent runtime.
+
+The intended ceiling for ClawDrive is:
+
+- deterministic local inspection
+- bounded routing logic
+- bounded local execution
+- bounded diagnosis
+
+The plugin should avoid expanding into:
+
+- open-ended repository crawling
+- general-purpose search engine behavior
+- full language-server replacement behavior
+- git/test/debug/terminal orchestration as a default path
+- provider-style autonomous reasoning implemented locally
+
+The provider remains the place for open-ended reasoning.
+ClawDrive remains the place for controlled local capability, grounding, and orchestration.
+
 ## Core User Outcomes
 
 The new repository should support these user-level outcomes:
@@ -43,10 +126,13 @@ The new repository should support these user-level outcomes:
 - let the user stay in conversation form for common flows such as "look at this", "give me options", "apply it", and "continue"
 - inspect the active workspace and files
 - read and edit code inside the workspace
-- inspect symbols, references, diagnostics, and language data
-- perform selected git, test, debug, and terminal actions
 - run long-lived planning or implementation tasks through a task API
 - see readable activity summaries in the IDE UI
+
+These are split into:
+
+- current mainline: natural-language entry, grounded inspect, task-backed analyze/plan/apply, continuation, diagnosis, activity visibility
+- later expansion: symbols and references, language-intelligence surfaces, git/test/debug/terminal actions
 
 ## Non-Goals For The First Rewrite Phase
 
@@ -55,6 +141,8 @@ The new repository should support these user-level outcomes:
 - marketplace polish, branding, or publisher migration
 - multi-root workspace support
 - text/file search commands
+- language-intelligence commands such as symbols and references
+- git, test, debug, and terminal command families
 
 ## Required Security Properties
 

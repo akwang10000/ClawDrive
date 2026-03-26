@@ -1,0 +1,15 @@
+.git/**
+.vscode/**
+docs/**
+src/**
+test/**
+scripts/**
+out-test/**
+selftest-report.json
+**/*.map
+.gitignore
+AGENTS.md
+package-lock.json
+tsconfig.json
+tsconfig.test.json
+*.vsix

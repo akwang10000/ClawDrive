@@ -10,6 +10,7 @@ import {
   buildCodexExecArgs,
   buildCodexResumeArgs,
   classifyCodexCliFailure,
+  classifyCodexRuntimeSignal,
   detectCodexCliCapabilities,
   sanitizeCodexConfig,
   validateCodexExecutablePath,
@@ -17,7 +18,7 @@ import {
 } from "./codex-cli";
 import type { ProviderProbeResult, ProviderRunCallbacks, ProviderRunContext, TaskProvider } from "./provider";
 import { commandFailure as commandFailureTypeGuard } from "../guards/errors";
-import type { ApplyOperation, TaskApprovalRequest, TaskDecisionRequest, TaskResponseInput, TaskRunResult } from "./types";
+import type { ApplyOperation, TaskApprovalRequest, TaskDecisionRequest, TaskProviderEvidence, TaskResponseInput, TaskRunResult } from "./types";
 
 interface AnalyzeSchemaResponse {
   summary: string;
@@ -63,6 +64,33 @@ interface ApplyCompletedSchemaResponse {
 }
 
 type ApplySchemaResponse = ApplyDecisionSchemaResponse | ApplyApprovalSchemaResponse | ApplyCompletedSchemaResponse;
+
+interface CodexRunCapture {
+  sawTurnStarted: boolean;
+  sawTurnCompleted: boolean;
+  lastProgressAt: number | null;
+  lastOutputAt: number | null;
+  lastActivityAt: number;
+  lastSessionAt: number | null;
+  lastAgentMessage: string | null;
+  stdoutEventTail: string[];
+}
+
+interface CodexCommandResult {
+  stdout: string;
+  stderr: string;
+  capture: CodexRunCapture;
+}
+
+interface MessageCandidate {
+  source: TaskProviderEvidence["finalMessageSource"];
+  text: string;
+}
+
+interface ParsedPayload<T> {
+  value: T;
+  finalMessageSource: TaskProviderEvidence["finalMessageSource"];
+}
 
 export class CodexCliProvider implements TaskProvider {
   readonly kind = "codex";
@@ -130,14 +158,15 @@ export class CodexCliProvider implements TaskProvider {
         callbacks,
         env
       );
-      const finalMessage = outputPath ? await this.readOutputMessage(outputPath) : null;
+      const outputFile = outputPath ? await this.readOutputMessage(outputPath) : { message: null, status: "not_used" as const };
+      callbacks.onEvidence(this.buildRunEvidence(raw.capture, outputFile.status));
       if (context.mode === "plan") {
-        return this.parsePlanResult(raw, finalMessage);
+        return this.parsePlanResult(raw, outputFile.message);
       }
       if (context.mode === "apply") {
-        return this.parseApplyResult(raw, finalMessage);
+        return this.parseApplyResult(raw, outputFile.message);
       }
-      return this.parseAnalyzeResult(raw, finalMessage);
+      return this.parseAnalyzeResult(raw, outputFile.message);
     } catch (error) {
       const failure = classifyCodexCliFailure(error);
       throw commandFailure(failure.code, failure.message);
@@ -184,7 +213,9 @@ export class CodexCliProvider implements TaskProvider {
         callbacks,
         env
       );
-      const message = outputPath ? await this.readOutputMessage(outputPath) : this.extractLastAgentMessage(raw);
+      const outputFile = outputPath ? await this.readOutputMessage(outputPath) : { message: null, status: "not_used" as const };
+      callbacks.onEvidence(this.buildRunEvidence(raw.capture, outputFile.status));
+      const message = this.resolvePrimaryMessage(raw, outputFile.message);
       if (context.mode === "apply") {
         return this.parseApplyResult(raw, message);
       }
@@ -320,7 +351,7 @@ export class CodexCliProvider implements TaskProvider {
       this.runCommand(executable, ["exec", "--help"], process.cwd(), signal, false, undefined, env),
       this.runCommand(executable, ["exec", "resume", "--help"], process.cwd(), signal, false, undefined, env),
     ]);
-    const capabilities = detectCodexCliCapabilities(rootHelp, execHelp, resumeHelp);
+    const capabilities = detectCodexCliCapabilities(rootHelp.stdout, execHelp.stdout, resumeHelp.stdout);
     this.capabilityCache.set(executable, capabilities);
     return capabilities;
   }
@@ -333,8 +364,8 @@ export class CodexCliProvider implements TaskProvider {
     parseEvents: boolean,
     callbacks?: ProviderRunCallbacks,
     env?: NodeJS.ProcessEnv
-  ): Promise<string> {
-    return await new Promise<string>((resolve, reject) => {
+  ): Promise<CodexCommandResult> {
+    return await new Promise<CodexCommandResult>((resolve, reject) => {
       const child = spawn(executable, args, {
         cwd: cwd ?? undefined,
         env: env ?? process.env,
@@ -345,11 +376,92 @@ export class CodexCliProvider implements TaskProvider {
       let stdout = "";
       let stderr = "";
       let stdoutBuffer = "";
+      const capture: CodexRunCapture = {
+        sawTurnStarted: false,
+        sawTurnCompleted: false,
+        lastProgressAt: null,
+        lastOutputAt: null,
+        lastActivityAt: Date.now(),
+        lastSessionAt: null,
+        lastAgentMessage: null,
+        stdoutEventTail: [],
+      };
+      const finalizationGraceMs = this.getFinalizationGraceMs();
+      const stalledWarningMs = this.getStalledWarningMs();
+      const stalledFailureMs = this.getStalledFailureMs();
+      const postResultGraceMs = this.getPostResultGraceMs();
+      let stallWarningEmitted = false;
+      let settled = false;
+      const flushStdoutBuffer = () => {
+        if (!stdoutBuffer.trim()) {
+          return;
+        }
+        const buffered = stdoutBuffer;
+        stdoutBuffer = "";
+        this.handleStdoutLine(buffered, capture, callbacks);
+      };
+      const settle = (handler: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        if (stallTimer) {
+          clearInterval(stallTimer);
+        }
+        handler();
+      };
       const onAbort = () => child.kill();
       signal.addEventListener("abort", onAbort, { once: true });
+      const stallTimer =
+        parseEvents && finalizationGraceMs > 0
+          ? setInterval(() => {
+              if (!capture.sawTurnCompleted) {
+                const semanticAnchor = capture.lastOutputAt ?? capture.lastProgressAt ?? capture.lastSessionAt;
+                if (!capture.sawTurnStarted || capture.lastAgentMessage || !semanticAnchor) {
+                  return;
+                }
+                const idleMs = Date.now() - semanticAnchor;
+                if (!stallWarningEmitted && idleMs >= stalledWarningMs) {
+                  stallWarningEmitted = true;
+                  callbacks?.onRuntimeSignal(
+                    {
+                      code: "PROVIDER_RESULT_STALL_WARNING",
+                      severity: "degraded",
+                      summary: "Provider task is still running but has not produced usable output for a while.",
+                      detail: `No provider output after turn start for ${Math.round(idleMs / 1000)}s.`,
+                    },
+                    `No provider output after turn start for ${Math.round(idleMs / 1000)}s.`
+                  );
+                  callbacks?.onProgress("Provider is still running, but result generation appears stalled.");
+                }
+                if (idleMs < stalledFailureMs) {
+                  return;
+                }
+                child.kill();
+                settle(() => reject(new Error("Codex task stalled after turn start without producing a usable result.")));
+                return;
+              }
+              const anchor = capture.lastOutputAt ?? capture.lastProgressAt ?? capture.lastActivityAt;
+              const idleMs = Date.now() - anchor;
+              if (capture.lastAgentMessage && idleMs >= postResultGraceMs) {
+                flushStdoutBuffer();
+                child.kill();
+                settle(() => resolve({ stdout, stderr, capture }));
+                return;
+              }
+              if (idleMs < finalizationGraceMs) {
+                return;
+              }
+              child.kill();
+              settle(() => reject(new Error("Codex turn completed but no final result arrived before provider finalization timeout.")));
+            }, Math.min(1_000, Math.max(250, Math.floor(finalizationGraceMs / 4))))
+          : null;
+      stallTimer?.unref?.();
 
       child.stdout.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf8");
+        capture.lastActivityAt = Date.now();
         stdout += text;
         if (!parseEvents) {
           return;
@@ -358,67 +470,103 @@ export class CodexCliProvider implements TaskProvider {
         const lines = stdoutBuffer.split(/\r?\n/);
         stdoutBuffer = lines.pop() ?? "";
         for (const line of lines) {
-          this.handleStdoutLine(line, callbacks);
+          this.handleStdoutLine(line, capture, callbacks);
         }
       });
 
       child.stderr.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf8");
+        capture.lastActivityAt = Date.now();
         stderr += text;
         for (const line of text.split(/\r?\n/).filter(Boolean)) {
           logError(`codex: ${line}`);
-          callbacks?.onOutput(line);
+          const signal = classifyCodexRuntimeSignal(line);
+          if (signal) {
+            callbacks?.onRuntimeSignal(signal, line);
+          }
         }
       });
 
       child.once("error", (error) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
+        settle(() => reject(error));
       });
 
       child.once("close", (code, closeSignal) => {
-        signal.removeEventListener("abort", onAbort);
-        if (stdoutBuffer.trim()) {
-          this.handleStdoutLine(stdoutBuffer, callbacks);
-        }
+        flushStdoutBuffer();
         if (signal.aborted) {
-          reject(new Error(String(signal.reason ?? "aborted")));
+          settle(() => reject(new Error(String(signal.reason ?? "aborted"))));
           return;
         }
         if (code === 0) {
-          resolve(stdout);
+          settle(() => resolve({ stdout, stderr, capture }));
           return;
         }
-        reject(new Error(stderr.trim() || stdout.trim() || `codex exited with code ${code ?? "unknown"} (${closeSignal ?? "no-signal"})`));
+        settle(() =>
+          reject(new Error(stderr.trim() || stdout.trim() || `codex exited with code ${code ?? "unknown"} (${closeSignal ?? "no-signal"})`))
+        );
       });
     });
   }
 
-  private handleStdoutLine(line: string, callbacks?: ProviderRunCallbacks): void {
+  private handleStdoutLine(line: string, capture: CodexRunCapture, callbacks?: ProviderRunCallbacks): void {
     const trimmed = line.trim();
     if (!trimmed) {
       return;
     }
+    const now = Date.now();
+    capture.lastActivityAt = now;
     try {
       const parsed = JSON.parse(trimmed) as Record<string, unknown>;
       const type = typeof parsed.type === "string" ? parsed.type : "";
+      capture.stdoutEventTail = [...capture.stdoutEventTail, this.describeStdoutEvent(type, parsed)].slice(-8);
+      if (type.startsWith("item.")) {
+        capture.lastProgressAt = now;
+      }
       if (type === "thread.started" && typeof parsed.thread_id === "string") {
+        capture.lastSessionAt = now;
+        callbacks?.onEvidence(this.buildRunEvidence(capture, "not_used"));
         callbacks?.onSessionId(parsed.thread_id);
         return;
       }
       if (type === "turn.started") {
+        capture.sawTurnStarted = true;
+        capture.lastProgressAt = now;
+        callbacks?.onEvidence(this.buildRunEvidence(capture, "not_used"));
         callbacks?.onProgress("Codex task turn started.");
         return;
       }
       if (type === "turn.completed") {
-        callbacks?.onProgress("Codex task turn completed.");
+        capture.sawTurnCompleted = true;
+        capture.lastProgressAt = now;
+        callbacks?.onEvidence(this.buildRunEvidence(capture, "not_used"));
+        callbacks?.onProgress("Codex task turn completed. Finalizing result.");
+        return;
+      }
+      if (type === "error" && typeof parsed.message === "string") {
+        const signal = classifyCodexRuntimeSignal(parsed.message);
+        if (signal) {
+          callbacks?.onRuntimeSignal(signal, parsed.message);
+        }
         return;
       }
       if (type === "item.completed") {
         const item = parsed.item as Record<string, unknown> | undefined;
         if (item?.type === "agent_message" && typeof item.text === "string") {
+          capture.lastAgentMessage = item.text;
+          capture.lastOutputAt = now;
+          callbacks?.onEvidence({
+            lastAgentMessagePreview: previewText(item.text),
+            stdoutEventTail: capture.stdoutEventTail,
+          });
           callbacks?.onOutput(item.text);
           callbacks?.onProgress("Received Codex output.");
+          return;
+        }
+        if (item?.type === "error" && typeof item.message === "string") {
+          const signal = classifyCodexRuntimeSignal(item.message);
+          if (signal) {
+            callbacks?.onRuntimeSignal(signal, item.message);
+          }
         }
       }
     } catch {
@@ -426,81 +574,157 @@ export class CodexCliProvider implements TaskProvider {
     }
   }
 
-  private parseAnalyzeResult(raw: string, finalMessage?: string | null): TaskRunResult {
-    const parsed = JSON.parse(stripMarkdownCodeFence(finalMessage ?? this.extractLastAgentMessage(raw))) as AnalyzeSchemaResponse;
+  private parseAnalyzeResult(raw: CodexCommandResult, finalMessage?: string | null): TaskRunResult {
+    const parsed = this.parsePayload<AnalyzeSchemaResponse>("analysis result", this.buildMessageCandidates(raw, finalMessage));
     return {
-      summary: parsed.summary.trim(),
-      output: parsed.details.trim(),
+      summary: parsed.value.summary.trim(),
+      output: parsed.value.details.trim(),
       decision: null,
+      providerEvidence: {
+        finalMessageSource: parsed.finalMessageSource,
+        lastAgentMessagePreview: previewText(raw.capture.lastAgentMessage),
+      },
     };
   }
 
   private parseAnalyzeMessage(message: string): TaskRunResult {
-    const parsed = JSON.parse(stripMarkdownCodeFence(message)) as AnalyzeSchemaResponse;
+    const parsed = this.parsePayload<AnalyzeSchemaResponse>("analysis result", [{ source: "direct_message", text: message }]);
     return {
-      summary: parsed.summary.trim(),
-      output: parsed.details.trim(),
+      summary: parsed.value.summary.trim(),
+      output: parsed.value.details.trim(),
       decision: null,
+      providerEvidence: {
+        finalMessageSource: parsed.finalMessageSource,
+        lastAgentMessagePreview: previewText(message),
+      },
     };
   }
 
-  private parsePlanResult(raw: string, finalMessage?: string | null): TaskRunResult {
-    const parsed = JSON.parse(stripMarkdownCodeFence(finalMessage ?? this.extractLastAgentMessage(raw))) as PlanSchemaResponse;
+  private parsePlanResult(raw: CodexCommandResult, finalMessage?: string | null): TaskRunResult {
+    const parsed = this.parsePayload<PlanSchemaResponse>("plan result", this.buildMessageCandidates(raw, finalMessage));
     const decision: TaskDecisionRequest = {
-      summary: parsed.summary.trim(),
-      options: parsed.options.map((option) => ({
+      summary: parsed.value.summary.trim(),
+      options: parsed.value.options.map((option) => ({
         id: option.id.trim(),
         title: option.title.trim(),
         summary: option.summary.trim(),
         recommended: option.recommended,
       })),
-      recommendedOptionId: parsed.options.find((option) => option.recommended)?.id ?? null,
+      recommendedOptionId: parsed.value.options.find((option) => option.recommended)?.id ?? null,
     };
     return {
       summary: decision.summary,
       output: decision.options.map((option) => `${option.id}: ${option.title} - ${option.summary}`).join("\n"),
       decision,
+      providerEvidence: {
+        finalMessageSource: parsed.finalMessageSource,
+        lastAgentMessagePreview: previewText(raw.capture.lastAgentMessage),
+      },
     };
   }
 
-  private parseApplyResult(raw: string, finalMessage?: string | null): TaskRunResult {
-    const parsed = JSON.parse(stripMarkdownCodeFence(finalMessage ?? this.extractLastAgentMessage(raw))) as ApplySchemaResponse;
-    if (parsed.stage === "decision") {
+  private parseApplyResult(raw: CodexCommandResult, finalMessage?: string | null): TaskRunResult {
+    const parsed = this.parsePayload<ApplySchemaResponse>("apply result", this.buildMessageCandidates(raw, finalMessage));
+    if (parsed.value.stage === "decision") {
       const decision: TaskDecisionRequest = {
-        summary: parsed.summary.trim(),
-        options: parsed.options.map((option) => ({
+        summary: parsed.value.summary.trim(),
+        options: parsed.value.options.map((option) => ({
           id: option.id.trim(),
           title: option.title.trim(),
           summary: option.summary.trim(),
           recommended: option.recommended,
         })),
-        recommendedOptionId: parsed.options.find((option) => option.recommended)?.id ?? null,
+        recommendedOptionId: parsed.value.options.find((option) => option.recommended)?.id ?? null,
       };
       return {
         summary: decision.summary,
         output: decision.options.map((option) => `${option.id}: ${option.title} - ${option.summary}`).join("\n"),
         decision,
+        providerEvidence: {
+          finalMessageSource: parsed.finalMessageSource,
+          lastAgentMessagePreview: previewText(raw.capture.lastAgentMessage),
+        },
       };
     }
 
-    if (parsed.stage === "approval") {
+    if (parsed.value.stage === "approval") {
       const approval: TaskApprovalRequest = {
-        summary: parsed.summary.trim(),
-        operations: parsed.operations.map((operation) => this.parseApplyOperation(operation)),
+        summary: parsed.value.summary.trim(),
+        operations: parsed.value.operations.map((operation) => this.parseApplyOperation(operation)),
       };
       return {
         summary: approval.summary,
         output: approval.operations.map((operation) => this.describeApplyOperation(operation)).join("\n"),
         approval,
+        providerEvidence: {
+          finalMessageSource: parsed.finalMessageSource,
+          lastAgentMessagePreview: previewText(raw.capture.lastAgentMessage),
+        },
       };
     }
 
     return {
-      summary: parsed.summary.trim(),
-      output: parsed.details.trim(),
+      summary: parsed.value.summary.trim(),
+      output: parsed.value.details.trim(),
       decision: null,
       approval: null,
+      providerEvidence: {
+        finalMessageSource: parsed.finalMessageSource,
+        lastAgentMessagePreview: previewText(raw.capture.lastAgentMessage),
+      },
     };
+  }
+
+  private buildMessageCandidates(raw: CodexCommandResult, finalMessage?: string | null): MessageCandidate[] {
+    const candidates: MessageCandidate[] = [];
+    if (finalMessage?.trim()) {
+      candidates.push({ source: "output_file", text: finalMessage });
+    }
+    if (raw.capture.lastAgentMessage?.trim()) {
+      candidates.push({ source: "stream_capture", text: raw.capture.lastAgentMessage });
+    }
+    try {
+      const stdoutMessage = this.extractLastAgentMessage(raw.stdout);
+      candidates.push({ source: "stdout_scan", text: stdoutMessage });
+    } catch {
+      // Ignore and continue with the candidates that were captured earlier.
+    }
+    return candidates;
+  }
+
+  private resolvePrimaryMessage(raw: CodexCommandResult, finalMessage?: string | null): string {
+    const candidates = this.buildMessageCandidates(raw, finalMessage);
+    if (candidates.length === 0) {
+      throw new Error("Codex did not return a final agent message.");
+    }
+    return candidates[0].text;
+  }
+
+  private parsePayload<T>(label: string, candidates: MessageCandidate[]): ParsedPayload<T> {
+    const errors: string[] = [];
+    for (const candidate of candidates) {
+      const normalized = stripMarkdownCodeFence(candidate.text);
+      try {
+        return { value: JSON.parse(normalized) as T, finalMessageSource: candidate.source };
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+
+      const extracted = extractEmbeddedJsonObject(normalized);
+      if (!extracted) {
+        continue;
+      }
+      try {
+        return { value: JSON.parse(extracted) as T, finalMessageSource: "embedded_json" };
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    if (candidates.length === 0) {
+      throw new Error(`Codex did not return a usable ${label}.`);
+    }
+    throw new Error(`Codex returned an unusable ${label}. ${errors[errors.length - 1] ?? ""}`.trim());
   }
 
   private extractLastAgentMessage(raw: string): string {
@@ -797,12 +1021,60 @@ export class CodexCliProvider implements TaskProvider {
     return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}.${extension}`);
   }
 
-  private async readOutputMessage(filePath: string): Promise<string> {
-    const raw = await fs.readFile(filePath, "utf8");
-    if (!raw.trim()) {
-      throw new Error("Codex resume did not return a final message.");
+  private async readOutputMessage(
+    filePath: string
+  ): Promise<{ message: string | null; status: TaskProviderEvidence["outputFileStatus"] }> {
+    try {
+      const raw = await fs.readFile(filePath, "utf8");
+      const trimmed = raw.trim();
+      return {
+        message: trimmed ? trimmed : null,
+        status: trimmed ? "present" : "empty",
+      };
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return { message: null, status: "missing" };
+      }
+      throw error;
     }
-    return raw.trim();
+  }
+
+  private getFinalizationGraceMs(): number {
+    return Math.max(1_000, Math.min(15_000, Math.floor(this.config.tasksDefaultTimeoutMs / 20) || 0));
+  }
+
+  private getStalledWarningMs(): number {
+    return Math.max(3_000, Math.min(30_000, Math.floor(this.config.tasksDefaultTimeoutMs / 6) || 0));
+  }
+
+  private getStalledFailureMs(): number {
+    return Math.max(this.getStalledWarningMs() + 2_000, Math.min(90_000, Math.floor(this.config.tasksDefaultTimeoutMs / 3) || 0));
+  }
+
+  private getPostResultGraceMs(): number {
+    return Math.max(750, Math.min(5_000, Math.floor(this.config.tasksDefaultTimeoutMs / 40) || 0));
+  }
+
+  private buildRunEvidence(
+    capture: CodexRunCapture,
+    outputFileStatus: TaskProviderEvidence["outputFileStatus"]
+  ): Partial<TaskProviderEvidence> {
+    return {
+      sawTurnStarted: capture.sawTurnStarted,
+      sawTurnCompleted: capture.sawTurnCompleted,
+      outputFileStatus,
+      lastAgentMessagePreview: previewText(capture.lastAgentMessage),
+      stdoutEventTail: capture.stdoutEventTail,
+    };
+  }
+
+  private describeStdoutEvent(type: string, parsed: Record<string, unknown>): string {
+    if (type === "item.completed") {
+      const item = parsed.item as Record<string, unknown> | undefined;
+      const itemType = typeof item?.type === "string" ? item.type : "unknown";
+      return `${type}:${itemType}`;
+    }
+    return type || "unknown";
   }
 
   private async removeTempFile(filePath: string | null): Promise<void> {
@@ -883,6 +1155,72 @@ function stripMarkdownCodeFence(value: string): string {
   const trimmed = value.trim();
   const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return match ? match[1].trim() : trimmed;
+}
+
+function previewText(value: string | null | undefined, maxLength = 160): string | null {
+  if (!value?.trim()) {
+    return null;
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
+}
+
+function extractEmbeddedJsonObject(value: string): string | null {
+  const normalized = stripMarkdownCodeFence(value);
+  for (let index = 0; index < normalized.length; index += 1) {
+    if (normalized[index] !== "{") {
+      continue;
+    }
+    const candidate = trySliceBalancedJson(normalized, index);
+    if (!candidate) {
+      continue;
+    }
+    try {
+      JSON.parse(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function trySliceBalancedJson(value: string, startIndex: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let index = startIndex; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (char === "\\") {
+        escaping = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char !== "}") {
+      continue;
+    }
+    depth -= 1;
+    if (depth === 0) {
+      return value.slice(startIndex, index + 1);
+    }
+  }
+
+  return null;
 }
 
 function isMissingFileError(error: unknown): boolean {

@@ -1,5 +1,20 @@
 # Rewrite Roadmap
 
+## Status Note
+
+This document is now historical roadmap context.
+
+Use it for:
+
+- understanding the earlier phase framing of the rewrite
+- understanding why the repository moved through transport, task framework, and natural-language milestones in that order
+
+Do not use it as the current execution plan.
+
+For the active next milestone, use:
+
+- [12-next-step-plan.md](12-next-step-plan.md)
+
 ## Phase 0: Repository Setup
 
 Create a new empty repository with:

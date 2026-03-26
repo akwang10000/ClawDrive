@@ -1,4 +1,5 @@
 import * as path from "path";
+import type { TaskRuntimeSignal } from "./types";
 
 export interface CodexCliCapabilities {
   supportsAskForApproval: boolean;
@@ -91,6 +92,31 @@ export function classifyCodexCliFailure(error: unknown): CodexCliFailure {
     };
   }
 
+  if (
+    normalized.includes("401 unauthorized") ||
+    normalized.includes("403 forbidden") ||
+    normalized.includes("missing bearer") ||
+    normalized.includes("missing bearer or basic authentication") ||
+    normalized.includes("invalid api key")
+  ) {
+    return {
+      code: "PROVIDER_AUTH_FAILED",
+      message: "Codex could not authenticate with the configured upstream model provider.",
+    };
+  }
+
+  if (
+    normalized.includes("500 internal server error") ||
+    normalized.includes("bad gateway") ||
+    normalized.includes("service unavailable") ||
+    normalized.includes("currently experiencing high demand")
+  ) {
+    return {
+      code: "PROVIDER_UPSTREAM_UNAVAILABLE",
+      message: "The upstream model provider is currently unavailable or unstable.",
+    };
+  }
+
   if (normalized.includes("blocked by policy") || normalized.includes("rejected: blocked by policy")) {
     return {
       code: "PROVIDER_COMMAND_POLICY_BLOCKED",
@@ -129,6 +155,27 @@ export function classifyCodexCliFailure(error: unknown): CodexCliFailure {
     };
   }
 
+  if (normalized.includes("no final result arrived before provider finalization timeout")) {
+    return {
+      code: "PROVIDER_FINALIZATION_STALLED",
+      message: "Codex finished its turn but never delivered the final result payload.",
+    };
+  }
+
+  if (normalized.includes("stalled after turn start without producing a usable result")) {
+    return {
+      code: "PROVIDER_RESULT_STALLED",
+      message: "Codex started the task but stopped making usable progress before producing a result.",
+    };
+  }
+
+  if (normalized.includes("did not return a usable") || normalized.includes("returned an unusable")) {
+    return {
+      code: "PROVIDER_OUTPUT_INVALID",
+      message: "Codex returned output that could not be parsed as the expected JSON result.",
+    };
+  }
+
   if (normalized.includes("unexpected token") || normalized.includes("json")) {
     return {
       code: "PROVIDER_OUTPUT_INVALID",
@@ -147,6 +194,109 @@ export function classifyCodexCliFailure(error: unknown): CodexCliFailure {
     code: "PROVIDER_EXECUTION_FAILED",
     message: message.trim() || "Codex execution failed.",
   };
+}
+
+export function classifyCodexRuntimeSignal(line: string): Omit<TaskRuntimeSignal, "count" | "lastSeenAt"> | null {
+  const trimmed = line.trim();
+  const normalized = trimmed.toLowerCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (normalized.includes("shell_snapshot") || normalized.includes("shell snapshot not supported")) {
+    return {
+      code: "PROVIDER_SHELL_SNAPSHOT_WARNING",
+      severity: "noise",
+      summary: "Provider shell snapshot support is unavailable for this shell.",
+      detail: trimmed,
+    };
+  }
+
+  if (normalized.includes("unknown feature key in config") || normalized.includes("helper")) {
+    return {
+      code: "PROVIDER_RUNTIME_HELPER_WARNING",
+      severity: "noise",
+      summary: "Provider emitted a non-fatal helper or startup warning.",
+      detail: trimmed,
+    };
+  }
+
+  if (
+    normalized.includes("blocked by policy") ||
+    normalized.includes("command is not permitted") ||
+    normalized.includes("rejected: blocked by policy")
+  ) {
+    return {
+      code: "PROVIDER_COMMAND_POLICY_WARNING",
+      severity: "degraded",
+      summary: "Provider command execution was restricted and runtime fell back to a narrower path.",
+      detail: trimmed,
+    };
+  }
+
+  if (
+    normalized.includes("falling back to http") ||
+    normalized.includes("falling back from websockets to https transport") ||
+    normalized.includes("startup websocket prewarm setup failed") ||
+    normalized.includes("failed to connect to websocket") ||
+    normalized.includes("reconnecting...") ||
+    normalized.includes("currently experiencing high demand")
+  ) {
+    return {
+      code: "PROVIDER_TRANSPORT_FALLBACK",
+      severity: "degraded",
+      summary: "Provider transport fell back to a slower or narrower runtime path.",
+      detail: trimmed,
+    };
+  }
+
+  if (normalized.includes("transport channel closed") || normalized.includes("unexpectedcontenttype")) {
+    return {
+      code: "PROVIDER_TRANSPORT_RUNTIME_WARNING",
+      severity: "degraded",
+      summary: "Provider transport emitted a non-fatal runtime warning.",
+      detail: trimmed,
+    };
+  }
+
+  if (
+    normalized.includes("401 unauthorized") ||
+    normalized.includes("403 forbidden") ||
+    normalized.includes("missing bearer") ||
+    normalized.includes("missing bearer or basic authentication") ||
+    normalized.includes("invalid api key")
+  ) {
+    return {
+      code: "PROVIDER_AUTH_FAILED",
+      severity: "fatal",
+      summary: "Provider authentication failed while contacting the upstream model service.",
+      detail: trimmed,
+    };
+  }
+
+  if (
+    normalized.includes("500 internal server error") ||
+    normalized.includes("bad gateway") ||
+    normalized.includes("service unavailable")
+  ) {
+    return {
+      code: "PROVIDER_UPSTREAM_UNAVAILABLE",
+      severity: "fatal",
+      summary: "Provider upstream connectivity or availability failed.",
+      detail: trimmed,
+    };
+  }
+
+  if (/\bwarn\b|\berror\b/.test(normalized)) {
+    return {
+      code: "PROVIDER_RUNTIME_STDERR",
+      severity: "noise",
+      summary: "Provider emitted a runtime warning.",
+      detail: trimmed,
+    };
+  }
+
+  return null;
 }
 
 export function sanitizeCodexConfig(raw: string): string {

@@ -1,12 +1,7 @@
-import { diagnosticsGet } from "../commands/diagnostics";
-import { directoryList } from "../commands/directory";
-import { activeEditor } from "../commands/editor";
-import { fileRead } from "../commands/file";
-import { workspaceInfo } from "../commands/workspace";
 import { collectOperatorStatus } from "../diagnostics";
 import type { ConnectionState } from "../gateway-client";
 import { getCurrentLocale } from "../i18n";
-import { taskResumePrompt, taskStateLabel } from "../tasks/text";
+import { taskExecutionHealthLabel, taskResumePrompt, taskStateLabel } from "../tasks/text";
 import type { ProviderStatusInfo } from "../tasks/types";
 import { TaskService } from "../tasks/service";
 import {
@@ -17,16 +12,26 @@ import {
   shouldUseRecommended,
   type InspectAction,
 } from "./classifier";
+import { inspectExtensionWiring } from "./extension-audit";
+import { inspectGroundedDirectory, inspectGroundedFiles, inspectGroundedRepository } from "./grounded-summary";
+import { inspectRuntimeFlow } from "./runtime-flow-audit";
+import { inspectSearchLite } from "./search-lite";
 import { continuationCandidateToChoice, type AgentRouteRequest, type AgentRouteResponse } from "./types";
+import { createWorkspaceInspector, type WorkspaceInspector } from "./workspace-inspector";
 
 interface AgentRouteServiceOptions {
   taskService: TaskService;
   getConnectionState: () => ConnectionState;
   getProviderStatus: () => ProviderStatusInfo;
+  inspector?: WorkspaceInspector;
 }
 
 export class AgentRouteService {
-  constructor(private readonly options: AgentRouteServiceOptions) {}
+  private readonly inspector: WorkspaceInspector;
+
+  constructor(private readonly options: AgentRouteServiceOptions) {
+    this.inspector = options.inspector ?? createWorkspaceInspector();
+  }
 
   async route(request: AgentRouteRequest): Promise<AgentRouteResponse> {
     const prompt = request.prompt.trim();
@@ -184,18 +189,26 @@ export class AgentRouteService {
   }
 
   private async routeDiagnose(): Promise<AgentRouteResponse> {
-    const latestFailedTask = this.options.taskService.getLatestTask(["failed"]);
-    const latestActiveTask = this.options.taskService.getLatestTask([
-      "waiting_approval",
-      "waiting_decision",
-      "running",
-      "queued",
-      "interrupted",
-    ]);
+    const recentTasks = this.options.taskService.listTasks({ limit: 20 });
+    const latestFailedTask = recentTasks.find((task) => task.state === "failed") ?? null;
+    const latestActiveTask =
+      recentTasks.find(
+        (task) =>
+          task.state === "waiting_approval" ||
+          task.state === "waiting_decision" ||
+          task.state === "running" ||
+          task.state === "queued" ||
+          task.state === "interrupted"
+      ) ?? null;
+    const latestCompletedWithWarnings =
+      recentTasks.find(
+        (task) =>
+          task.state === "completed" && (task.executionHealth === "warning" || task.executionHealth === "degraded")
+      ) ?? null;
     const operatorStatus = await collectOperatorStatus(
       this.options.getConnectionState(),
       this.options.getProviderStatus(),
-      latestActiveTask ?? latestFailedTask
+      latestFailedTask ?? latestCompletedWithWarnings ?? latestActiveTask
     );
 
     const lines = [
@@ -222,6 +235,13 @@ export class AgentRouteService {
         text(
           `Latest failed task: ${latestFailedTask.title}. ${operatorStatus.latestFailureSummary ?? latestFailedTask.summary}`,
           `\u6700\u8fd1\u5931\u8d25\u7684\u4efb\u52a1\uff1A${latestFailedTask.title}\u3002${operatorStatus.latestFailureSummary ?? latestFailedTask.summary}`
+        )
+      );
+    } else if (latestCompletedWithWarnings) {
+      lines.push(
+        text(
+          `Latest completed task: ${latestCompletedWithWarnings.title} (${taskExecutionHealthLabel(latestCompletedWithWarnings.executionHealth)}). ${operatorStatus.latestNonFatalSummary ?? latestCompletedWithWarnings.summary}`,
+          `\u6700\u8fd1\u5b8c\u6210\u7684\u4efb\u52a1\uff1A${latestCompletedWithWarnings.title}\uff08${taskStateLabel(latestCompletedWithWarnings.state)} / ${taskExecutionHealthLabel(latestCompletedWithWarnings.executionHealth)}\uff09\u3002${operatorStatus.latestNonFatalSummary ?? latestCompletedWithWarnings.summary}`
         )
       );
     } else if (latestActiveTask) {
@@ -266,36 +286,90 @@ export class AgentRouteService {
           kind: "direct_result",
           route: "inspect",
           message: text("I checked the current workspace.", "\u6211\u5df2\u7ecf\u67e5\u770b\u4e86\u5f53\u524d\u5de5\u4f5c\u533a\u3002"),
-          data: await workspaceInfo(),
+          data: await this.inspector.workspaceInfo(),
         };
       case "editor":
         return {
           kind: "direct_result",
           route: "inspect",
           message: text("I inspected the active editor.", "\u6211\u5df2\u7ecf\u67e5\u770b\u4e86\u5f53\u524d\u7f16\u8f91\u5668\u3002"),
-          data: await activeEditor(),
+          data: await this.inspector.activeEditor(),
         };
       case "diagnostics":
         return {
           kind: "direct_result",
           route: "inspect",
           message: text("I collected the current diagnostics.", "\u6211\u5df2\u7ecf\u6536\u96c6\u4e86\u5f53\u524d\u8bca\u65ad\u4fe1\u606f\u3002"),
-          data: await diagnosticsGet(action.path ? { path: action.path } : undefined),
+          data: await this.inspector.diagnosticsGet(action.path ? { path: action.path } : undefined),
         };
       case "file":
         return {
           kind: "direct_result",
           route: "inspect",
           message: text("I read the requested file.", "\u6211\u5df2\u7ecf\u8bfb\u53d6\u4e86\u8bf7\u6c42\u7684\u6587\u4ef6\u3002"),
-          data: await fileRead({ path: action.path }),
+          data: await this.inspector.fileRead({ path: action.path }),
         };
       case "directory":
         return {
           kind: "direct_result",
           route: "inspect",
           message: text("I listed the requested directory.", "\u6211\u5df2\u7ecf\u5217\u51fa\u4e86\u8bf7\u6c42\u7684\u76ee\u5f55\u3002"),
-          data: await directoryList({ path: action.path }),
+          data: await this.inspector.directoryList({ path: action.path }),
         };
+      case "search_lite": {
+        const result = await inspectSearchLite(this.inspector, action.query);
+        return {
+          kind: "direct_result",
+          route: "inspect",
+          message: result.summary,
+          data: result,
+        };
+      }
+      case "runtime_flow_audit": {
+        const result = await inspectRuntimeFlow(this.inspector);
+        return {
+          kind: "direct_result",
+          route: "inspect",
+          message: result.summary,
+          data: result,
+        };
+      }
+      case "repository_summary": {
+        const result = await inspectGroundedRepository(this.inspector, undefined, action.focusPath);
+        return {
+          kind: "direct_result",
+          route: "inspect",
+          message: result.summary,
+          data: result,
+        };
+      }
+      case "directory_summary": {
+        const summary = await inspectGroundedDirectory(this.inspector, action.path);
+        return {
+          kind: "direct_result",
+          route: "inspect",
+          message: summary.summary,
+          data: summary,
+        };
+      }
+      case "grounded_summary": {
+        const summary = await inspectGroundedFiles(this.inspector, action.paths);
+        return {
+          kind: "direct_result",
+          route: "inspect",
+          message: summary.summary,
+          data: summary,
+        };
+      }
+      case "extension_audit": {
+        const audit = await inspectExtensionWiring(this.inspector);
+        return {
+          kind: "direct_result",
+          route: "inspect",
+          message: audit.summary,
+          data: audit,
+        };
+      }
     }
   }
 }

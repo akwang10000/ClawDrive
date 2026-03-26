@@ -63,6 +63,8 @@ test("buildOperatorStatusFromDiagnosis surfaces latest failed task summary", () 
     updatedAt: "2026-03-21T12:01:00.000Z",
     summary: "Task failed: unexpected argument",
     lastOutput: null,
+    executionHealth: "failed",
+    runtimeSignals: [],
     decision: null,
     approval: null,
     error: "unexpected argument '--output-schema' found",
@@ -70,6 +72,7 @@ test("buildOperatorStatusFromDiagnosis surfaces latest failed task summary", () 
     providerKind: "codex",
     providerSessionId: "session-1",
     resultSummary: null,
+    providerEvidence: null,
   };
 
   const status = buildOperatorStatusFromDiagnosis(
@@ -91,4 +94,55 @@ test("buildOperatorStatusFromDiagnosis surfaces latest failed task summary", () 
     status.actionableHint,
     "Inspect the latest failed task summary and error code before re-running the task."
   );
+});
+
+test("buildOperatorStatusFromDiagnosis surfaces degraded completion separately from failure", () => {
+  const degradedTask: TaskSnapshot = {
+    taskId: "task-2",
+    title: "Plan: repo",
+    mode: "plan",
+    state: "completed",
+    prompt: "Give me two options",
+    paths: [],
+    createdAt: "2026-03-21T12:00:00.000Z",
+    updatedAt: "2026-03-21T12:01:00.000Z",
+    summary: "Plan completed.",
+    lastOutput: null,
+    executionHealth: "degraded",
+    runtimeSignals: [
+      {
+        code: "PROVIDER_TRANSPORT_FALLBACK",
+        severity: "degraded",
+        summary: "Provider transport fell back to a slower or narrower runtime path.",
+        count: 1,
+        lastSeenAt: "2026-03-21T12:00:30.000Z",
+      },
+    ],
+    decision: null,
+    approval: null,
+    error: null,
+    errorCode: null,
+    providerKind: "codex",
+    providerSessionId: "session-2",
+    resultSummary: "Plan completed.",
+    providerEvidence: null,
+  };
+
+  const status = buildOperatorStatusFromDiagnosis(
+    {
+      gatewayUrl: "ws://127.0.0.1:18789",
+      connectionState: "connected",
+      callable: true,
+      providerStatus: readyProvider,
+      findings: [],
+    },
+    degradedTask
+  );
+
+  assert.equal(status.latestTaskHealth, "degraded");
+  assert.equal(
+    status.latestNonFatalSummary,
+    "PROVIDER_TRANSPORT_FALLBACK: Provider transport fell back to a slower or narrower runtime path."
+  );
+  assert.equal(status.latestFailureSummary, null);
 });

@@ -36,7 +36,8 @@ Examples:
 - read a file
 - inspect the workspace
 - check diagnostics
-- show current git status
+- summarize a named file
+- summarize a named directory such as `src`
 
 Expected route:
 
@@ -45,6 +46,7 @@ Expected route:
 Expected behavior:
 
 - no task orchestration unless the request becomes broad enough that multi-step analysis is clearer
+- prefer grounded local summaries when the prompt explicitly names files or directories
 
 ### Analyze And Explain
 
@@ -93,12 +95,13 @@ Examples:
 
 Expected route:
 
-- first confirm write intent if scope is not already explicit
-- then enter provider-backed execution mode
+- provider-backed `apply` task
+- explicit approval before local mutation
 
 Expected behavior:
 
 - use assistant-task orchestration rather than requiring the user to assemble task lifecycle calls manually
+- keep planning and approval as distinct pauses
 - report progress in natural language
 - return a plain summary of what changed
 
@@ -126,11 +129,12 @@ Expected behavior:
 The routing layer should follow these rules in order.
 
 1. Prefer read-only handling when the request is inspection, explanation, or diagnosis.
-2. Prefer planning mode when the user asks for options, tradeoffs, or explicitly says not to change anything.
-3. Do not enter write execution immediately on a broad modification request unless the intended scope is already clear.
-4. Treat `continue`, `keep going`, or `use the recommended one` as task-resolution requests before treating them as new work.
-5. Hide command names, task identifiers, and JSON payloads unless the user is debugging or asks for them directly.
-6. When a task must pause for a choice, surface the choice in plain language and keep the recommended option obvious.
+2. Prefer grounded local inspect when the request explicitly names files, directories, or extension-wiring artifacts that can be read directly.
+3. Prefer planning mode when the user asks for options, tradeoffs, or explicitly says not to change anything.
+4. Do not enter write execution immediately on a broad modification request unless the intended scope is already clear.
+5. Treat `continue`, `keep going`, or `use the recommended one` as task-resolution requests before treating them as new work.
+6. Hide command names, task identifiers, and JSON payloads unless the user is debugging or asks for them directly.
+7. When a task must pause for a choice, surface the choice in plain language and keep the recommended option obvious.
 
 ## Provider-Neutral Execution Model
 

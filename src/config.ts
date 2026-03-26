@@ -22,7 +22,7 @@ export function getConfig(): ClawDriveConfig {
     gatewayPort: cfg.get<number>("gateway.port", 18789),
     gatewayTls: cfg.get<boolean>("gateway.tls", false),
     gatewayToken: cfg.get<string>("gateway.token", ""),
-    autoConnect: cfg.get<boolean>("autoConnect", true),
+    autoConnect: cfg.get<boolean>("autoConnect", false),
     displayName: cfg.get<string>("displayName", "ClawDrive"),
     providerEnabled: cfg.get<boolean>("provider.enabled", false),
     providerKind: "codex",

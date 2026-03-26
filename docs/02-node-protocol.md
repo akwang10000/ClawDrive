@@ -27,15 +27,17 @@ The new repository should support this sequence:
    - signed device identity
 5. Transition to `connected` only after the Gateway accepts the node.
 
-Phase 1 implementation note:
+Current implementation note:
 
 - this flow is now implemented and verified against a real local Gateway
-- the first accepted command surface is intentionally limited to `vscode.workspace.info`
+- the node now advertises the direct read surface, `vscode.agent.route`, and the stable `vscode.agent.task.*` task surface
+- the advertised inventory should be treated as the current callable contract, not as a planning sketch
 
 Operational note:
 
 - the command inventory advertised at connect time must match the command list the node is actually willing to execute
 - if the Gateway allowlist is too narrow or does not exact-match command names, the node may appear connected while exposing an unexpectedly small or empty command set
+- a connected node can still be effectively non-callable if `allowCommands` omits part of the advertised surface such as `vscode.agent.route` or task commands
 
 ## Device Identity Compatibility
 

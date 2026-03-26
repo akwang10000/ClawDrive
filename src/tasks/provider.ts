@@ -1,4 +1,13 @@
-import type { TaskApprovalRequest, TaskDecisionRequest, TaskMode, TaskResponseInput, TaskRunResult, TaskState } from "./types";
+import type {
+  TaskApprovalRequest,
+  TaskDecisionRequest,
+  TaskMode,
+  TaskProviderEvidence,
+  TaskResponseInput,
+  TaskRunResult,
+  TaskRuntimeSignal,
+  TaskState,
+} from "./types";
 
 export interface ProviderProbeResult {
   ready: boolean;
@@ -22,6 +31,8 @@ export interface ProviderRunCallbacks {
   onSessionId: (sessionId: string) => void;
   onProgress: (summary: string) => void;
   onOutput: (output: string) => void;
+  onRuntimeSignal: (signal: Omit<TaskRuntimeSignal, "count" | "lastSeenAt">, rawDetail?: string) => void;
+  onEvidence: (evidence: Partial<TaskProviderEvidence>) => void;
 }
 
 export interface TaskProvider {

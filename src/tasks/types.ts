@@ -10,6 +10,10 @@ export type TaskState =
 
 export type TaskMode = "analyze" | "plan" | "apply";
 
+export type TaskRuntimeSignalSeverity = "noise" | "degraded" | "fatal";
+
+export type TaskExecutionHealth = "clean" | "warning" | "degraded" | "failed";
+
 export type TaskEventType =
   | "queued"
   | "started"
@@ -20,6 +24,7 @@ export type TaskEventType =
   | "waiting_approval"
   | "approved"
   | "rejected"
+  | "runtime_signal"
   | "completed"
   | "failed"
   | "cancelled"
@@ -58,6 +63,30 @@ export interface TaskApprovalRequest {
   operations: ApplyOperation[];
 }
 
+export interface TaskRuntimeSignal {
+  code: string;
+  severity: TaskRuntimeSignalSeverity;
+  summary: string;
+  detail?: string;
+  count: number;
+  lastSeenAt: string;
+}
+
+export interface TaskProviderEvidence {
+  sawTurnStarted: boolean;
+  sawTurnCompleted: boolean;
+  outputFileStatus: "not_used" | "missing" | "empty" | "present";
+  finalMessageSource:
+    | "none"
+    | "output_file"
+    | "stream_capture"
+    | "stdout_scan"
+    | "direct_message"
+    | "embedded_json";
+  lastAgentMessagePreview: string | null;
+  stdoutEventTail: string[];
+}
+
 export interface TaskSnapshot {
   taskId: string;
   title: string;
@@ -69,6 +98,8 @@ export interface TaskSnapshot {
   updatedAt: string;
   summary: string;
   lastOutput: string | null;
+  executionHealth: TaskExecutionHealth;
+  runtimeSignals: TaskRuntimeSignal[];
   decision: TaskDecisionRequest | null;
   approval: TaskApprovalRequest | null;
   error: string | null;
@@ -76,6 +107,7 @@ export interface TaskSnapshot {
   providerKind: string;
   providerSessionId: string | null;
   resultSummary: string | null;
+  providerEvidence: TaskProviderEvidence | null;
 }
 
 export interface TaskEventRecord {
@@ -90,7 +122,10 @@ export interface TaskEventRecord {
 
 export interface TaskResultPayload {
   snapshot: TaskSnapshot;
+  executionHealth: TaskExecutionHealth;
+  runtimeSignals: TaskRuntimeSignal[];
   approval: TaskApprovalRequest | null;
+  providerEvidence: TaskProviderEvidence | null;
   events: TaskEventRecord[];
 }
 
@@ -135,7 +170,7 @@ export interface TaskResponseInput {
 
 export interface ProviderStatusInfo {
   ready: boolean;
-  state: "disabled" | "ready" | "missing" | "error";
+  state: "disabled" | "checking" | "ready" | "missing" | "error";
   label: string;
   message: string;
   detail: string;
@@ -147,4 +182,5 @@ export interface TaskRunResult {
   output?: string | null;
   decision?: TaskDecisionRequest | null;
   approval?: TaskApprovalRequest | null;
+  providerEvidence?: Partial<TaskProviderEvidence> | null;
 }

@@ -151,6 +151,7 @@ Codex provider 当前依赖本地可运行的 Codex CLI。
 
 ## 文档
 
+- [docs/00-document-map.md](docs/00-document-map.md)
 - [docs/03-command-surface.md](docs/03-command-surface.md)
 - [docs/06-intent-routing.md](docs/06-intent-routing.md)
 - [docs/07-validation-goals.md](docs/07-validation-goals.md)
@@ -158,6 +159,7 @@ Codex provider 当前依赖本地可运行的 Codex CLI。
 - [docs/09-operator-setup-and-diagnosis.md](docs/09-operator-setup-and-diagnosis.md)
 - [docs/10-natural-language-calling.md](docs/10-natural-language-calling.md)
 - [docs/10-natural-language-calling.zh-CN.md](docs/10-natural-language-calling.zh-CN.md)
+- [docs/12-next-step-plan.md](docs/12-next-step-plan.md)
 
 ## 本地开发
 

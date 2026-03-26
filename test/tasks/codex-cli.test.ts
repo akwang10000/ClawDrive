@@ -4,6 +4,7 @@ import {
   buildCodexExecArgs,
   buildCodexResumeArgs,
   classifyCodexCliFailure,
+  classifyCodexRuntimeSignal,
   detectCodexCliCapabilities,
   sanitizeCodexConfig,
   validateCodexExecutablePath,
@@ -105,6 +106,14 @@ test("classifyCodexCliFailure maps common provider failures to stable codes", ()
         "Codex transport failed while talking to a downstream service. Check external MCP or model-provider compatibility.",
     }
   );
+  assert.deepEqual(classifyCodexCliFailure(new Error("unexpected status 401 Unauthorized: Missing bearer or basic authentication in header")), {
+    code: "PROVIDER_AUTH_FAILED",
+    message: "Codex could not authenticate with the configured upstream model provider.",
+  });
+  assert.deepEqual(classifyCodexCliFailure(new Error("HTTP error: 500 Internal Server Error")), {
+    code: "PROVIDER_UPSTREAM_UNAVAILABLE",
+    message: "The upstream model provider is currently unavailable or unstable.",
+  });
   assert.deepEqual(classifyCodexCliFailure(new Error("rejected: blocked by policy")), {
     code: "PROVIDER_COMMAND_POLICY_BLOCKED",
     message:
@@ -114,6 +123,51 @@ test("classifyCodexCliFailure maps common provider failures to stable codes", ()
     code: "PROVIDER_CLI_ARGS_UNSUPPORTED",
     message: "The installed Codex CLI does not support one or more arguments required by this provider.",
   });
+  assert.deepEqual(
+    classifyCodexCliFailure(new Error("Codex turn completed but no final result arrived before provider finalization timeout.")),
+    {
+      code: "PROVIDER_FINALIZATION_STALLED",
+      message: "Codex finished its turn but never delivered the final result payload.",
+    }
+  );
+  assert.deepEqual(classifyCodexCliFailure(new Error("Codex task stalled after turn start without producing a usable result.")), {
+    code: "PROVIDER_RESULT_STALLED",
+    message: "Codex started the task but stopped making usable progress before producing a result.",
+  });
+  assert.deepEqual(classifyCodexCliFailure(new Error("Codex returned an unusable plan result. Unexpected token x")), {
+    code: "PROVIDER_OUTPUT_INVALID",
+    message: "Codex returned output that could not be parsed as the expected JSON result.",
+  });
+});
+
+test("classifyCodexRuntimeSignal recognizes warning, degraded, and fatal patterns", () => {
+  assert.deepEqual(
+    classifyCodexRuntimeSignal("WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell"),
+    {
+      code: "PROVIDER_SHELL_SNAPSHOT_WARNING",
+      severity: "noise",
+      summary: "Provider shell snapshot support is unavailable for this shell.",
+      detail: "WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell",
+    }
+  );
+  assert.deepEqual(
+    classifyCodexRuntimeSignal("WARN codex_core::client: falling back to HTTP"),
+    {
+      code: "PROVIDER_TRANSPORT_FALLBACK",
+      severity: "degraded",
+      summary: "Provider transport fell back to a slower or narrower runtime path.",
+      detail: "WARN codex_core::client: falling back to HTTP",
+    }
+  );
+  assert.deepEqual(
+    classifyCodexRuntimeSignal("unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"),
+    {
+      code: "PROVIDER_AUTH_FAILED",
+      severity: "fatal",
+      summary: "Provider authentication failed while contacting the upstream model service.",
+      detail: "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header",
+    }
+  );
 });
 
 test("sanitizeCodexConfig removes mcp server sections and keeps model config", () => {

@@ -39,13 +39,13 @@ The current implementation supports:
 
 - `analyze`
 - `plan`
+- `apply`
 
-It does not currently expose write-capable `apply`.
+`apply` is intentionally narrow:
 
-If a request is clearly asking for code changes, the expected v1 behavior is:
-
-- do not execute writes
-- steer the request back into planning first
+- the provider proposes options and then a structured approval payload
+- local VS Code execution applies supported file operations only after explicit approval
+- supported local operations are currently limited to `write_file` and `replace_text`
 
 ## Current Task States
 
@@ -54,6 +54,7 @@ The current repository uses these lifecycle states:
 - `queued`
 - `running`
 - `waiting_decision`
+- `waiting_approval`
 - `completed`
 - `failed`
 - `cancelled`
@@ -67,9 +68,10 @@ The intended split for the current milestone is:
 
 - normal natural-language entry -> `vscode.agent.route`
 - simple inspect and query -> direct read-only commands
+- explicit file, directory, and plugin-wiring inspection -> grounded local inspect summaries when possible
 - broad explanation and multi-file understanding -> `analyze`
 - options, tradeoffs, and "do not modify anything" -> `plan`
-- write intent -> blocked in v1 and redirected toward planning
+- write intent -> `apply` with decision and approval pauses
 
 ## Activity And Recovery Surface
 
@@ -78,7 +80,7 @@ The current repository also includes operator-side support for task execution:
 - persisted task snapshots in extension global storage
 - persisted event history
 - one active provider-backed task at a time with FIFO queueing
-- activity view actions for open result, continue, and cancel
+- activity view actions for open result, continue, approve, reject, and cancel
 - restart recovery where `running` becomes `interrupted`
 
 ## Current Provider Reality
@@ -97,7 +99,6 @@ This is acceptable for v1 as long as the public task API does not need to change
 
 The following command families are still roadmap items, not current implementation:
 
-- write-oriented file commands
 - language intelligence commands
 - git command family
 - test command family
@@ -116,5 +117,6 @@ Docs for this repository should distinguish clearly between:
 The current repository should be documented as:
 
 - honest about direct read-only coverage
-- honest about planning-only task execution
+- honest about grounded inspect coverage versus provider-backed analysis
+- honest about the narrow `apply` slice and explicit approval requirement
 - honest about Codex CLI being the only implemented provider

@@ -29,6 +29,34 @@ test("classifier maps direct inspect prompts conservatively", () => {
     type: "inspect",
     action: { type: "file", path: "README.md" },
   });
+  assert.deepEqual(classifyIntent("Where is `vscode.agent.route` wired up?", []), {
+    type: "inspect",
+    action: { type: "search_lite", query: "vscode.agent.route" },
+  });
+  assert.deepEqual(classifyIntent("Read README.md and summarize installation.", []), {
+    type: "inspect",
+    action: { type: "grounded_summary", paths: ["README.md"] },
+  });
+  assert.deepEqual(classifyIntent("Compare package.json and src/extension.ts.", []), {
+    type: "inspect",
+    action: { type: "grounded_summary", paths: ["package.json", "src/extension.ts"] },
+  });
+  assert.deepEqual(classifyIntent("Summarize this repository structure.", []), {
+    type: "inspect",
+    action: { type: "repository_summary", focusPath: undefined },
+  });
+  assert.deepEqual(classifyIntent("Look at src and explain the main modules.", []), {
+    type: "inspect",
+    action: { type: "repository_summary", focusPath: "src" },
+  });
+  assert.deepEqual(classifyIntent("Explain how route, task service, and provider fit together.", []), {
+    type: "inspect",
+    action: { type: "runtime_flow_audit" },
+  });
+  assert.deepEqual(classifyIntent("Summarize the src directory.", []), {
+    type: "inspect",
+    action: { type: "directory_summary", path: "src" },
+  });
   assert.deepEqual(classifyIntent("列出 src", ["src"]), {
     type: "inspect",
     action: { type: "directory", path: "src" },

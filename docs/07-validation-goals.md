@@ -29,11 +29,22 @@ Validated:
 - ClawDrive can queue and run provider-backed tasks
 - Codex CLI can be discovered and launched from the VS Code node
 - provider-backed `analyze` and `plan` flows can execute through the task contract
+- the narrow `apply` flow can reach decision, approval, and local mutation execution
 - task execution is observable from OpenClaw and the VS Code activity view
 
-This is enough to say that the current planning and analysis milestone is real, not just architectural.
+### Grounded Inspect Slice
 
-It is not enough to claim that write execution is complete.
+Validated:
+
+- explicit file reads can be inferred directly from natural-language prompts
+- named files can be summarized locally without falling back to provider speculation
+- selected directories such as `src` can be summarized through directory listing plus sampled file reads
+- explicit code-location prompts can find likely files for bounded local tokens such as command ids
+- extension-wiring checks can be grounded in `package.json`, source entrypoints, and build entrypoints
+
+This is enough to say that the current natural-language inspect, planning, and apply slices are real, not just architectural.
+
+It is not enough to claim that repository-wide autonomous understanding is complete.
 
 ## Product-Level Acceptance
 
@@ -74,12 +85,14 @@ User goal:
 - ask what workspace is open
 - read a file
 - list a directory
+- summarize named files or a named directory
 - inspect diagnostics
 
 Expected result:
 
 - the system completes the request through direct read-only capability
 - the reply is phrased as assistant help, not protocol output
+- explicit files or directories can return a grounded summary instead of raw provider speculation
 
 ### Scenario 2: Analyze
 
@@ -134,8 +147,8 @@ Expected result:
 
 The following should not yet be claimed as complete:
 
-- write-capable `apply`
-- file mutation command surface
+- broad autonomous repository inspection without explicit grounding hints
+- general-purpose search and symbol/reference workflows
 - full language, git, test, debug, or terminal integration
 - provider parity beyond Codex CLI
 
