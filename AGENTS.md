@@ -77,6 +77,12 @@ Add new entries at the top of the decision log.
 
 ### 2026-03-30
 
+- Decision: Post-turn transport warnings now require semantic recovery such as final output or `turn.completed`; generic todo/tool item activity no longer suppresses early transport failure handling by itself.
+- Why: Some read-only tasks emitted downstream transport-closed warnings, kept producing low-level item traffic, and stayed degraded for too long before settling even though the transport had likely already broken semantically.
+- Impact: Read-only analyze/plan runs fall back or fail faster after real post-turn transport breakage instead of waiting behind non-semantic provider activity, reducing long `running + degraded` windows on simple tasks.
+
+### 2026-03-30
+
 - Decision: Provider runtime isolation now exposes an experimental `raw` policy level plus configurable forced-off Codex startup features for task runs.
 - Why: Some provider-backed diagnostics need a controlled way to test whether failures are caused by the plugin's derived task environment versus the source Codex home and startup feature set.
 - Impact: Default behavior stays on `safe`/`extended`, but operators can now opt into `raw` source `CODEX_HOME` reuse and can clear the forced-off feature list for targeted experiments without changing the remote task command surface.

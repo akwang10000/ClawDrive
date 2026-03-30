@@ -2,7 +2,7 @@
   "name": "clawdrive-vscode",
   "displayName": "ClawDrive for VS Code",
   "description": "Natural-language IDE agent bridge for OpenClaw.",
-  "version": "0.1.41",
+  "version": "0.1.42",
   "publisher": "wangtuo",
   "license": "MIT",
   "private": true,

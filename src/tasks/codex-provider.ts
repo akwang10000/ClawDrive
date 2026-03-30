@@ -1642,7 +1642,7 @@ export class CodexCliProvider implements TaskProvider {
     ) {
       return null;
     }
-    if (this.hasRecoveredSinceTransportWarning(transportWarningAt, capture)) {
+    if (this.hasSemanticRecoverySinceTransportWarning(transportWarningAt, capture)) {
       return null;
     }
     return transportWarningLine ?? "transport stream disconnected after the provider turn started.";
@@ -1656,9 +1656,13 @@ export class CodexCliProvider implements TaskProvider {
           (capture.lastSessionAt && capture.lastSessionAt > at)
       );
     }
+    return this.hasSemanticRecoverySinceTransportWarning(at, capture);
+  }
+
+  private hasSemanticRecoverySinceTransportWarning(at: number, capture: CodexRunCapture): boolean {
     return Boolean(
       (capture.lastOutputAt && capture.lastOutputAt > at) ||
-        (capture.lastProgressAt && capture.lastProgressAt > at && (capture.sawPostTurnItemActivity || capture.sawTurnCompleted))
+        (capture.lastProgressAt && capture.lastProgressAt > at && capture.sawTurnCompleted)
     );
   }
 

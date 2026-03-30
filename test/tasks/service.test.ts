@@ -678,6 +678,62 @@ test("TaskService falls back to bounded local read-only planning when provider-b
   assert.match(waiting.lastOutput ?? "", /Task Pipeline Locations|任务链路位置/i);
 });
 
+test("TaskService falls back to bounded local read-only planning on transport failure after turn start", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-readonly-fallback-transport");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_TRANSPORT_RUNTIME_WARNING",
+          severity: "degraded",
+          summary: "Provider transport received an invalid or empty downstream response.",
+          detail:
+            'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))',
+        },
+        'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))'
+      );
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalizationPath: "timeout",
+        stdoutEventTail: ["thread.started", "turn.started", "item.updated:todo_list"],
+      });
+      throw Object.assign(
+        new Error(
+          'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))'
+        ),
+        { code: "PROVIDER_TRANSPORT_FAILED" }
+      );
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({
+    prompt:
+      "Analyze the current workspace and return a structured report with repository purpose, top-level module breakdown, likely entry points, task pipeline locations, and a recommended file-reading order for debugging the VS Code task pipeline. Do not modify files.",
+    mode: "plan",
+  });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision", 5_000);
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.equal(waiting.errorCode, null);
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_TRANSPORT_RUNTIME_WARNING"));
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+  assert.ok((waiting.decision?.options.length ?? 0) >= 2);
+  assert.match(waiting.resultSummary ?? "", /bounded local read-only plan|受限的只读计划/i);
+});
+
 test("TaskService reclassifies generic stalled provider failures as transport failures when transport warnings were recorded", async () => {
   const rootPath = await makeTempDir("clawdrive-task-transport-reclassify");
   setWorkspaceRoot(rootPath);
