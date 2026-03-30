@@ -173,11 +173,3 @@ npm test
 ```
 
 然后在 VS Code 中打开仓库并按 `F5` 启动 Extension Development Host。
-
-## 参考边界
-
-仅用于行为分析参考：
-
-- `https://github.com/akwang10000/openclaw-vscode.git`
-
-本仓库不应复制参考仓库中的源码、测试、资源文件或文案。

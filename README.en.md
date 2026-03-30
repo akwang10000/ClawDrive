@@ -179,11 +179,3 @@ npm test
 ```
 
 Then open the repository in VS Code and press `F5` to launch the extension development host.
-
-## Reference Boundary
-
-Behavior-analysis reference only:
-
-- `https://github.com/akwang10000/openclaw-vscode.git`
-
-This repository should not copy source code, tests, assets, or wording from that reference repository.
