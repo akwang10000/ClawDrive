@@ -77,6 +77,12 @@ Add new entries at the top of the decision log.
 
 ### 2026-03-30
 
+- Decision: Hard post-turn transport breaks such as `missing-content-type`, `UnexpectedContentType`, or closed result streams now use a shorter failure grace than the generic task timeout-derived budget.
+- Why: Default 300s task budgets were leaving even simple read-only tasks degraded and `running` for roughly 25 seconds after downstream transport failure before they failed or fell back, which looked like a regression even though the plugin eventually settled them.
+- Impact: Simple analyze/plan tasks with unrecovered hard transport breakage now fail or fall back within a much shorter bounded window, while softer transport degradation still keeps the broader grace budget.
+
+### 2026-03-30
+
 - Decision: Post-turn transport warnings now require semantic recovery such as final output or `turn.completed`; generic todo/tool item activity no longer suppresses early transport failure handling by itself.
 - Why: Some read-only tasks emitted downstream transport-closed warnings, kept producing low-level item traffic, and stayed degraded for too long before settling even though the transport had likely already broken semantically.
 - Impact: Read-only analyze/plan runs fall back or fail faster after real post-turn transport breakage instead of waiting behind non-semantic provider activity, reducing long `running + degraded` windows on simple tasks.

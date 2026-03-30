@@ -442,7 +442,6 @@ export class CodexCliProvider implements TaskProvider {
       const stalledFailureMs = this.getStalledFailureMs(stallMode ?? null);
       const turnCompletionTimeoutMs = this.getTurnCompletionTimeoutMs(stallMode ?? null);
       const transportFailureGraceMs = this.getTransportFailureGraceMs();
-      const postTurnTransportFailureGraceMs = this.getPostTurnTransportFailureGraceMs();
       const postResultGraceMs = this.getPostResultGraceMs();
       let stallWarningEmitted = false;
       let settled = false;
@@ -539,6 +538,10 @@ export class CodexCliProvider implements TaskProvider {
                 !capture.outputFileReady &&
                 !this.hasRecoveredSinceTransportWarning(transportWarningAt, capture)
               ) {
+                const postTurnTransportFailureGraceMs = this.getPostTurnTransportFailureGraceMs(
+                  stallMode ?? null,
+                  transportWarningLine
+                );
                 const transportIdleMs = Date.now() - transportWarningAt;
                 if (transportIdleMs >= postTurnTransportFailureGraceMs) {
                   child.kill();
@@ -1490,7 +1493,12 @@ export class CodexCliProvider implements TaskProvider {
     return Math.max(2_000, Math.min(8_000, base));
   }
 
-  private getPostTurnTransportFailureGraceMs(): number {
+  private getPostTurnTransportFailureGraceMs(mode: TaskMode | null, warningLine: string | null): number {
+    if (this.isHardTransportBreakLine(warningLine)) {
+      const hardBase = Math.floor(this.config.tasksDefaultTimeoutMs / 40) || 0;
+      const hardCap = mode === "plan" || mode === "analyze" ? 8_000 : 10_000;
+      return Math.max(4_000, Math.min(hardCap, hardBase));
+    }
     const base = Math.floor(this.config.tasksDefaultTimeoutMs / 12) || 0;
     return Math.max(4_000, Math.min(25_000, base));
   }
@@ -1663,6 +1671,19 @@ export class CodexCliProvider implements TaskProvider {
     return Boolean(
       (capture.lastOutputAt && capture.lastOutputAt > at) ||
         (capture.lastProgressAt && capture.lastProgressAt > at && capture.sawTurnCompleted)
+    );
+  }
+
+  private isHardTransportBreakLine(line: string | null): boolean {
+    if (!line) {
+      return false;
+    }
+    const normalized = line.toLowerCase();
+    return (
+      normalized.includes("unexpectedcontenttype") ||
+      normalized.includes("missing-content-type") ||
+      normalized.includes("transport channel closed") ||
+      normalized.includes("stream closed before response.completed")
     );
   }
 

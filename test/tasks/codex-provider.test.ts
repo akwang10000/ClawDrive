@@ -498,6 +498,45 @@ test("CodexCliProvider does not treat post-turn item activity as semantic recove
   assert.ok(Date.now() - startedAt < 12_000);
 });
 
+test("CodexCliProvider hard transport warnings do not wait behind the full default task budget", async () => {
+  const provider = new CodexCliProvider(makeConfig({ tasksDefaultTimeoutMs: 300_000 }));
+  const runtimeSignals: Array<{ code: string; severity: string; summary: string }> = [];
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    () =>
+      (provider as unknown as { runCommand: Function }).runCommand(
+        process.execPath,
+        [
+          "-e",
+          [
+            "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'session-1' }));",
+            "console.log(JSON.stringify({ type: 'turn.started' }));",
+            "setTimeout(() => console.error('worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some(\"missing-content-type; body: \"))'), 250);",
+            "setTimeout(() => {}, 20_000);",
+          ].join(" "),
+        ],
+        process.cwd(),
+        new AbortController().signal,
+        true,
+        {
+          ...noOpCallbacks(),
+          onRuntimeSignal(signal: { code: string; severity: string; summary: string }) {
+            runtimeSignals.push(signal);
+          },
+        }
+      ),
+    (error: unknown) => {
+      assert.match(String(error), /Transport channel closed|missing-content-type/i);
+      return true;
+    }
+  );
+
+  assert.ok(runtimeSignals.some((signal) => signal.code === "PROVIDER_TRANSPORT_RUNTIME_WARNING"));
+  assert.ok(Date.now() - startedAt >= 4_000);
+  assert.ok(Date.now() - startedAt < 12_000);
+});
+
 test("CodexCliProvider fails turn-started tasks early on transport fallback body-decode errors", async () => {
   const provider = new CodexCliProvider(makeConfig({ tasksDefaultTimeoutMs: 30_000 }));
   const runtimeSignals: Array<{ code: string; severity: string; summary: string }> = [];
