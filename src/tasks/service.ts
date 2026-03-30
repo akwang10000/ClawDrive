@@ -440,6 +440,36 @@ export class TaskService implements vscode.Disposable {
     this.emitter.fire();
 
     const workspacePath = this.options.getWorkspacePath();
+    let transportWatchdog: NodeJS.Timeout | null = null;
+    let hardTransportWatchdogDetail: string | null = null;
+    const clearTransportWatchdog = () => {
+      if (!transportWatchdog) {
+        return;
+      }
+      clearTimeout(transportWatchdog);
+      transportWatchdog = null;
+    };
+    const maybeArmTransportWatchdog = () => {
+      if (
+        transportWatchdog ||
+        !hardTransportWatchdogDetail ||
+        !this.shouldAbortForHardTransportWatchdog(snapshot)
+      ) {
+        return;
+      }
+      transportWatchdog = setTimeout(() => {
+        transportWatchdog = null;
+        if (!hardTransportWatchdogDetail || !this.shouldAbortForHardTransportWatchdog(snapshot) || signal.aborted) {
+          return;
+        }
+        const active = this.activeRun;
+        if (!active || active.taskId !== snapshot.taskId) {
+          return;
+        }
+        active.controller.abort("provider_transport_watchdog");
+      }, this.getHardTransportWatchdogMs());
+      transportWatchdog.unref?.();
+    };
     try {
       const callbacks = {
         onSessionId: (sessionId: string) => {
@@ -460,6 +490,7 @@ export class TaskService implements vscode.Disposable {
         onOutput: (output: string) => {
           snapshot.lastOutput = output;
           snapshot.updatedAt = this.options.now();
+          clearTransportWatchdog();
           void this.storage.saveSnapshot(snapshot);
           this.tasks.set(snapshot.taskId, snapshot);
           void this.appendEvent(snapshot, "output", "Task output updated.", output);
@@ -469,11 +500,21 @@ export class TaskService implements vscode.Disposable {
           signal: Omit<TaskRuntimeSignal, "count" | "lastSeenAt">,
           rawDetail?: string
         ) => {
+          const watchdogDetail = this.getHardTransportWatchdogDetail(signal, rawDetail);
+          if (watchdogDetail) {
+            hardTransportWatchdogDetail = watchdogDetail;
+            maybeArmTransportWatchdog();
+          }
           void this.persistRuntimeSignal(snapshot, signal, rawDetail);
         },
         onEvidence: (evidence: Partial<TaskProviderEvidence>) => {
           snapshot.providerEvidence = this.mergeProviderEvidence(snapshot.providerEvidence, evidence);
           snapshot.updatedAt = this.options.now();
+          if (snapshot.providerEvidence?.sawTurnCompleted || snapshot.lastOutput || snapshot.state !== "running") {
+            clearTransportWatchdog();
+          } else {
+            maybeArmTransportWatchdog();
+          }
           void this.storage.saveSnapshot(snapshot);
           this.tasks.set(snapshot.taskId, snapshot);
           this.emitter.fire();
@@ -579,6 +620,8 @@ export class TaskService implements vscode.Disposable {
       }
       this.tasks.set(snapshot.taskId, snapshot);
       this.emitter.fire();
+    } finally {
+      clearTransportWatchdog();
     }
   }
 
@@ -949,5 +992,29 @@ export class TaskService implements vscode.Disposable {
       return "warning";
     }
     return "clean";
+  }
+
+  private getHardTransportWatchdogDetail(
+    signal: Omit<TaskRuntimeSignal, "count" | "lastSeenAt">,
+    rawDetail?: string
+  ): string | null {
+    if (signal.code !== "PROVIDER_TRANSPORT_RUNTIME_WARNING" && signal.code !== "PROVIDER_TRANSPORT_FALLBACK") {
+      return null;
+    }
+    const detail = rawDetail ?? signal.detail ?? signal.summary;
+    const classified = classifyCodexCliFailure(new Error(detail));
+    return classified.code === "PROVIDER_TRANSPORT_FAILED" ? detail : null;
+  }
+
+  private shouldAbortForHardTransportWatchdog(snapshot: TaskSnapshot): boolean {
+    if (snapshot.state !== "running" || snapshot.lastOutput) {
+      return false;
+    }
+    return Boolean(snapshot.providerEvidence?.sawTurnStarted && !snapshot.providerEvidence?.sawTurnCompleted);
+  }
+
+  private getHardTransportWatchdogMs(): number {
+    const base = Math.floor(this.options.getConfig().tasksDefaultTimeoutMs / 40) || 0;
+    return Math.max(4_000, Math.min(8_000, base));
   }
 }

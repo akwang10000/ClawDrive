@@ -734,6 +734,174 @@ test("TaskService falls back to bounded local read-only planning on transport fa
   assert.match(waiting.resultSummary ?? "", /bounded local read-only plan|受限的只读计划/i);
 });
 
+test("TaskService aborts hung provider runs after hard transport warnings and settles via read-only fallback", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-transport-watchdog");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks, signal) {
+      callbacks.onProgress("Codex task turn started.");
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalizationPath: "none",
+        stdoutEventTail: ["thread.started", "turn.started"],
+      });
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_TRANSPORT_RUNTIME_WARNING",
+          severity: "degraded",
+          summary: "Provider transport received an invalid or empty downstream response.",
+          detail:
+            'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))',
+        },
+        'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))'
+      );
+      return await new Promise<TaskRunResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error(String(signal.reason ?? "aborted"))), { once: true });
+      });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ tasksDefaultTimeoutMs: 30_000 }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const startedAt = Date.now();
+  const queued = await service.startTask({
+    prompt: "Return the current workspace name and whether an active editor exists. Do not modify anything.",
+    mode: "plan",
+  });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision", 12_000);
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.equal(waiting.errorCode, null);
+  assert.ok(Date.now() - startedAt < 15_000);
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_TRANSPORT_RUNTIME_WARNING"));
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+  assert.match(waiting.resultSummary ?? "", /bounded local read-only plan/i);
+});
+
+test("TaskService does not abort recoverable runs that produce a result soon after a hard transport warning", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-transport-watchdog-recover");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onProgress("Codex task turn started.");
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalizationPath: "none",
+        stdoutEventTail: ["thread.started", "turn.started"],
+      });
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_TRANSPORT_RUNTIME_WARNING",
+          severity: "degraded",
+          summary: "Provider transport received an invalid or empty downstream response.",
+          detail:
+            'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))',
+        },
+        'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))'
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      return {
+        summary: "Recovered plan output.",
+        output: "option_a: Recover and continue\noption_b: Retry from scratch",
+        decision: {
+          summary: "Recovered plan output.",
+          recommendedOptionId: "option_a",
+          options: [
+            { id: "option_a", title: "Recover and continue", summary: "Use the recovered provider result.", recommended: true },
+            { id: "option_b", title: "Retry from scratch", summary: "Discard the recovered result and retry.", recommended: false },
+          ],
+        },
+        providerEvidence: {
+          sawTurnCompleted: true,
+          finalizationPath: "stream_capture",
+          finalMessageSource: "stream_capture",
+          lastAgentMessagePreview: "Recovered plan output.",
+          stdoutEventTail: ["thread.started", "turn.started", "item.completed:agent_message", "turn.completed"],
+        },
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ tasksDefaultTimeoutMs: 30_000 }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Return two safe options and do not modify anything.", mode: "plan" });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision", 8_000);
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.equal(waiting.errorCode, null);
+  assert.equal(waiting.resultSummary, "Recovered plan output.");
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_TRANSPORT_RUNTIME_WARNING"));
+  assert.ok(!waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+});
+
+test("TaskService aborts hung apply runs after hard transport warnings and marks them failed", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-transport-watchdog-apply");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks, signal) {
+      callbacks.onProgress("Codex task turn started.");
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalizationPath: "none",
+        stdoutEventTail: ["thread.started", "turn.started"],
+      });
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_TRANSPORT_RUNTIME_WARNING",
+          severity: "degraded",
+          summary: "Provider transport received an invalid or empty downstream response.",
+          detail:
+            'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))',
+        },
+        'worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("missing-content-type; body: "))'
+      );
+      return await new Promise<TaskRunResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error(String(signal.reason ?? "aborted"))), { once: true });
+      });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ tasksDefaultTimeoutMs: 30_000 }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const startedAt = Date.now();
+  const queued = await service.startTask({ prompt: "Implement the requested fix.", mode: "apply" });
+  const failed = await waitForTaskState(service, queued.taskId, "failed", 12_000);
+
+  assert.equal(failed.executionHealth, "failed");
+  assert.equal(failed.errorCode, "PROVIDER_TRANSPORT_FAILED");
+  assert.ok(Date.now() - startedAt < 15_000);
+  assert.ok(failed.runtimeSignals.some((signal) => signal.code === "PROVIDER_TRANSPORT_RUNTIME_WARNING"));
+  assert.ok(!failed.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+});
+
 test("TaskService reclassifies generic stalled provider failures as transport failures when transport warnings were recorded", async () => {
   const rootPath = await makeTempDir("clawdrive-task-transport-reclassify");
   setWorkspaceRoot(rootPath);

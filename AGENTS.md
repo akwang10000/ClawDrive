@@ -77,6 +77,12 @@ Add new entries at the top of the decision log.
 
 ### 2026-03-30
 
+- Decision: TaskService now keeps a service-level hard-transport watchdog for active provider runs, so `turn.started` tasks that record unrecovered hard transport warnings are aborted and normalized even if the provider promise itself never settles.
+- Why: Some real OpenClaw repros still observed `running + degraded` after `turn.started` plus `missing-content-type` or closed-channel warnings, which means provider-side early-failure logic alone was not a sufficient containment boundary.
+- Impact: Read-only analyze/plan tasks with stuck hard transport breakage now still fail or fall back to bounded local results within a short window instead of depending entirely on provider-side finalization behavior; this is a safety net and does not change the public `vscode.agent.task.*` surface.
+
+### 2026-03-30
+
 - Decision: Hard post-turn transport breaks such as `missing-content-type`, `UnexpectedContentType`, or closed result streams now use a shorter failure grace than the generic task timeout-derived budget.
 - Why: Default 300s task budgets were leaving even simple read-only tasks degraded and `running` for roughly 25 seconds after downstream transport failure before they failed or fell back, which looked like a regression even though the plugin eventually settled them.
 - Impact: Simple analyze/plan tasks with unrecovered hard transport breakage now fail or fall back within a much shorter bounded window, while softer transport degradation still keeps the broader grace budget.
