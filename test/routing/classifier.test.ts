@@ -6,6 +6,13 @@ test("classifier routes analyze prompts", () => {
   assert.deepEqual(classifyIntent("解释一下这个仓库", []), { type: "analyze" });
 });
 
+test("classifier keeps read-only analysis prompts on analyze", () => {
+  assert.deepEqual(classifyIntent("Analyze the repository purpose and top-level modules. Do not modify files.", []), {
+    type: "analyze",
+  });
+  assert.deepEqual(classifyIntent("先别改，分析一下这个仓库的结构。", []), { type: "analyze" });
+});
+
 test("classifier routes plan prompts", () => {
   assert.deepEqual(classifyIntent("给我两个方案，先别改", []), { type: "plan" });
 });
@@ -70,4 +77,20 @@ test("classifier maps direct inspect prompts conservatively", () => {
 test("classifier routes diagnose prompts", () => {
   assert.deepEqual(classifyIntent("为什么失败", []), { type: "diagnose" });
   assert.deepEqual(classifyIntent("现在什么状态", []), { type: "diagnose" });
+});
+
+test("classifier does not treat generic provider architecture prompts as diagnosis", () => {
+  assert.deepEqual(classifyIntent("Explain the provider contract in this repo.", []), { type: "analyze" });
+  assert.notEqual(classifyIntent("Compare the provider abstraction in docs and code.", []).type, "diagnose");
+  assert.notEqual(classifyIntent("Why does this repo use a provider abstraction?", []).type, "diagnose");
+  assert.notEqual(classifyIntent("Why is the provider interface shaped this way?", []).type, "diagnose");
+  assert.notEqual(classifyIntent("检查 provider 抽象设计", []).type, "diagnose");
+  assert.notEqual(classifyIntent("检查 provider 接口契约", []).type, "diagnose");
+});
+
+test("classifier keeps explicit provider status and failure prompts on diagnose", () => {
+  assert.deepEqual(classifyIntent("Check provider status.", []), { type: "diagnose" });
+  assert.deepEqual(classifyIntent("Why did the provider fail to connect?", []), { type: "diagnose" });
+  assert.deepEqual(classifyIntent("检查 provider 状态", []), { type: "diagnose" });
+  assert.deepEqual(classifyIntent("为什么 provider 连不上", []), { type: "diagnose" });
 });

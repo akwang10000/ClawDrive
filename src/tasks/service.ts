@@ -5,8 +5,10 @@ import { commandFailure } from "../guards/errors";
 import { resolveContainedPath } from "../guards/workspace-access";
 import { log } from "../logger";
 import { StructuredApplyExecutor } from "./apply-executor";
+import { classifyCodexCliFailure } from "./codex-cli";
 import { CodexCliProvider } from "./codex-provider";
 import type { ProviderProbeResult, TaskProvider } from "./provider";
+import { buildReadonlyTaskFallback, shouldAttemptReadonlyTaskFallback } from "./readonly-fallback";
 import { TaskStorage } from "./storage";
 import {
   taskApprovalSummary,
@@ -81,6 +83,7 @@ export class TaskService implements vscode.Disposable {
   private readonly pendingRuns = new Map<string, RunTrigger>();
   private activeRun: ActiveRun | null = null;
   private providerStatus: ProviderStatusInfo;
+  private providerRefreshPromise: Promise<ProviderStatusInfo> | null = null;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -143,12 +146,24 @@ export class TaskService implements vscode.Disposable {
   }
 
   async refreshProviderStatus(): Promise<ProviderStatusInfo> {
-    this.storage = this.createStorage(this.options.getConfig().tasksHistoryLimit);
-    await this.storage.initialize();
-    this.provider = this.createProvider();
-    this.providerStatus = this.mapProbeToStatus(await this.provider.probe());
-    this.emitter.fire();
-    return this.providerStatus;
+    if (this.providerRefreshPromise) {
+      return await this.providerRefreshPromise;
+    }
+
+    this.providerRefreshPromise = (async () => {
+      this.storage = this.createStorage(this.options.getConfig().tasksHistoryLimit);
+      await this.storage.initialize();
+      this.provider = this.createProvider();
+      this.providerStatus = this.mapProbeToStatus(await this.provider.probe());
+      this.emitter.fire();
+      return this.providerStatus;
+    })();
+
+    try {
+      return await this.providerRefreshPromise;
+    } finally {
+      this.providerRefreshPromise = null;
+    }
   }
 
   getProviderStatus(): ProviderStatusInfo {
@@ -157,9 +172,11 @@ export class TaskService implements vscode.Disposable {
 
   listTasks(params?: TaskListParams): TaskSnapshot[] {
     const limit = Math.max(1, Math.min(params?.limit ?? 20, 100));
-    return [...this.tasks.values()]
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, limit);
+    return this.listAllTasks().slice(0, limit);
+  }
+
+  listAllTasks(): TaskSnapshot[] {
+    return [...this.tasks.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   getTask(taskId: string): TaskSnapshot {
@@ -194,7 +211,7 @@ export class TaskService implements vscode.Disposable {
     if (params.mode !== "analyze" && params.mode !== "plan" && params.mode !== "apply") {
       throw commandFailure("INVALID_PARAMS", "mode must be analyze, plan, or apply.");
     }
-    if (/\b(apply|implement|write|modify|edit|fix|patch|commit)\b/i.test(prompt) && params.mode === "analyze") {
+    if (params.mode === "analyze" && this.promptLooksLikeWriteRequest(prompt)) {
       throw commandFailure("TASK_MODE_UNSUPPORTED", taskWriteBlockedMessage());
     }
 
@@ -274,7 +291,7 @@ export class TaskService implements vscode.Disposable {
     const snapshot = this.getTask(taskId);
     if (this.activeRun?.taskId === taskId) {
       this.cancelActiveRun("cancelled");
-      return snapshot;
+      return await this.waitForTaskSettlement(taskId, ["cancelled", "failed", "interrupted"]);
     }
     if (snapshot.state === "completed" || snapshot.state === "failed" || snapshot.state === "cancelled") {
       return snapshot;
@@ -290,6 +307,21 @@ export class TaskService implements vscode.Disposable {
     this.tasks.set(snapshot.taskId, snapshot);
     this.emitter.fire();
     return snapshot;
+  }
+
+  async deleteTask(taskId: string): Promise<void> {
+    const snapshot = this.getTask(taskId);
+    if (snapshot.state !== "completed" && snapshot.state !== "failed" && snapshot.state !== "cancelled") {
+      throw commandFailure(
+        "TASK_NOT_DELETABLE",
+        `Task ${snapshot.taskId} in state ${snapshot.state} cannot be deleted. Only completed, failed, or cancelled tasks can be deleted.`
+      );
+    }
+
+    this.pendingRuns.delete(taskId);
+    await this.storage.deleteTask(taskId);
+    this.tasks.delete(taskId);
+    this.emitter.fire();
   }
 
   async continueLatestRecommended(): Promise<TaskSnapshot> {
@@ -407,8 +439,8 @@ export class TaskService implements vscode.Disposable {
     this.tasks.set(snapshot.taskId, snapshot);
     this.emitter.fire();
 
+    const workspacePath = this.options.getWorkspacePath();
     try {
-      const workspacePath = this.options.getWorkspacePath();
       const callbacks = {
         onSessionId: (sessionId: string) => {
           snapshot.providerSessionId = sessionId;
@@ -437,18 +469,7 @@ export class TaskService implements vscode.Disposable {
           signal: Omit<TaskRuntimeSignal, "count" | "lastSeenAt">,
           rawDetail?: string
         ) => {
-          const now = this.options.now();
-          snapshot.runtimeSignals = this.mergeRuntimeSignal(snapshot.runtimeSignals, {
-            ...signal,
-            count: 1,
-            lastSeenAt: now,
-          });
-          snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, snapshot.state);
-          snapshot.updatedAt = now;
-          void this.storage.saveSnapshot(snapshot);
-          this.tasks.set(snapshot.taskId, snapshot);
-          void this.appendEvent(snapshot, "runtime_signal", signal.summary, rawDetail ?? signal.detail);
-          this.emitter.fire();
+          void this.persistRuntimeSignal(snapshot, signal, rawDetail);
         },
         onEvidence: (evidence: Partial<TaskProviderEvidence>) => {
           snapshot.providerEvidence = this.mergeProviderEvidence(snapshot.providerEvidence, evidence);
@@ -458,6 +479,10 @@ export class TaskService implements vscode.Disposable {
           this.emitter.fire();
         },
       };
+
+      if (signal.aborted) {
+        throw new Error(String(signal.reason ?? "aborted"));
+      }
 
       const result =
         trigger.kind === "apply_approval"
@@ -515,26 +540,42 @@ export class TaskService implements vscode.Disposable {
         await this.storage.saveSnapshot(snapshot);
         await this.appendEvent(snapshot, "interrupted", snapshot.summary);
       } else {
-        const message =
+        const rawMessage =
           reason === "timeout"
             ? `Task timed out after ${this.options.getConfig().tasksDefaultTimeoutMs}ms.`
             : error instanceof Error
               ? error.message
               : String(error);
-        const code =
+        const rawCode =
           reason === "timeout"
             ? "TASK_TIMEOUT"
             : error instanceof Error && "code" in error && typeof error.code === "string"
               ? error.code
               : "TASK_FAILED";
+        const failure = this.normalizeFailedTaskOutcome(snapshot, rawCode, rawMessage);
+        const fallback = await this.maybeBuildReadonlyFallback(snapshot, workspacePath, failure.code, failure.message);
+        if (fallback) {
+          await this.persistRuntimeSignal(
+            snapshot,
+            {
+              code: "PROVIDER_LOCAL_READONLY_FALLBACK",
+              severity: "degraded",
+              summary: "Provider did not finish cleanly; completed with bounded local workspace analysis.",
+              detail: `${failure.code}: ${failure.message}`,
+            },
+            `${failure.code}: ${failure.message}`
+          );
+          await this.applyRunResult(snapshot, fallback);
+          return;
+        }
         snapshot.state = "failed";
-        snapshot.errorCode = code;
-        snapshot.error = message;
-        snapshot.summary = taskFailedSummary(message);
+        snapshot.errorCode = failure.code;
+        snapshot.error = failure.message;
+        snapshot.summary = taskFailedSummary(failure.message);
         snapshot.executionHealth = "failed";
         snapshot.updatedAt = this.options.now();
         await this.storage.saveSnapshot(snapshot);
-        await this.appendEvent(snapshot, "failed", snapshot.summary, `${code}: ${message}`);
+        await this.appendEvent(snapshot, "failed", snapshot.summary, `${failure.code}: ${failure.message}`);
       }
       this.tasks.set(snapshot.taskId, snapshot);
       this.emitter.fire();
@@ -591,6 +632,19 @@ export class TaskService implements vscode.Disposable {
       .map((value) => resolveContainedPath(value).path);
   }
 
+  private promptLooksLikeWriteRequest(prompt: string): boolean {
+    const normalized = prompt.toLowerCase();
+    if (
+      /\b(read-?only|analysis only|analyze only|analyse only|no changes? yet|keep this as analysis only)\b/.test(normalized) ||
+      /\bdo not (?:apply|implement|write|modify|edit|fix|patch|commit|change)\b/.test(normalized) ||
+      /\bdon't (?:apply|implement|write|modify|edit|fix|patch|commit|change)\b/.test(normalized) ||
+      /\bwithout (?:applying|implementing|writing|modifying|editing|fixing|patching|committing|changing)\b/.test(normalized)
+    ) {
+      return false;
+    }
+    return /\b(apply|implement|write|modify|edit|fix|patch|commit)\b/.test(normalized);
+  }
+
   private normalizeResponse(params: TaskRespondParams): TaskResponseInput {
     const optionId = params.optionId?.trim();
     const message = params.message?.trim();
@@ -626,6 +680,37 @@ export class TaskService implements vscode.Disposable {
     }
     this.activeRun.reason = reason;
     this.activeRun.controller.abort(reason ?? "aborted");
+  }
+
+  private async waitForTaskSettlement(taskId: string, states: TaskState[], timeoutMs = 2_000): Promise<TaskSnapshot> {
+    const allowed = new Set(states);
+    const current = this.tasks.get(taskId);
+    if (current && allowed.has(current.state)) {
+      return current;
+    }
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const subscription = this.onDidChange(() => {
+        const next = this.tasks.get(taskId);
+        if (!next || !allowed.has(next.state)) {
+          return;
+        }
+        settled = true;
+        subscription.dispose();
+        clearTimeout(timer);
+        resolve();
+      });
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        subscription.dispose();
+        resolve();
+      }, timeoutMs);
+    });
+
+    return this.getTask(taskId);
   }
 
   private async appendEvent(snapshot: TaskSnapshot, type: TaskEventRecord["type"], summary: string, detail?: string): Promise<void> {
@@ -721,6 +806,96 @@ export class TaskService implements vscode.Disposable {
     return snapshot.approval;
   }
 
+  private async persistRuntimeSignal(
+    snapshot: TaskSnapshot,
+    signal: Omit<TaskRuntimeSignal, "count" | "lastSeenAt">,
+    rawDetail?: string
+  ): Promise<void> {
+    const now = this.options.now();
+    snapshot.runtimeSignals = this.mergeRuntimeSignal(snapshot.runtimeSignals, {
+      ...signal,
+      count: 1,
+      lastSeenAt: now,
+    });
+    snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, snapshot.state);
+    snapshot.updatedAt = now;
+    await this.storage.saveSnapshot(snapshot);
+    this.tasks.set(snapshot.taskId, snapshot);
+    await this.appendEvent(snapshot, "runtime_signal", signal.summary, rawDetail ?? signal.detail);
+    this.emitter.fire();
+  }
+
+  private normalizeFailedTaskOutcome(
+    snapshot: TaskSnapshot,
+    code: string,
+    message: string
+  ): { code: string; message: string } {
+    const transportSignal = this.findLatestTransportSignal(snapshot.runtimeSignals);
+    if (
+      !transportSignal ||
+      !["PROVIDER_TURN_STALLED", "PROVIDER_RESULT_STALLED", "PROVIDER_EXECUTION_FAILED", "TASK_FAILED"].includes(code)
+    ) {
+      return { code, message };
+    }
+
+    const classified = classifyCodexCliFailure(new Error(transportSignal.detail ?? transportSignal.summary));
+    if (classified.code === "PROVIDER_TRANSPORT_FAILED") {
+      return classified;
+    }
+    return {
+      code: "PROVIDER_TRANSPORT_FAILED",
+      message: transportSignal.summary,
+    };
+  }
+
+  private async maybeBuildReadonlyFallback(
+    snapshot: TaskSnapshot,
+    workspacePath: string | null,
+    code: string,
+    message: string
+  ): Promise<TaskRunResult | null> {
+    if (
+      snapshot.mode === "apply" ||
+      !["PROVIDER_TRANSPORT_FAILED", "PROVIDER_TURN_STALLED", "PROVIDER_RESULT_STALLED", "PROVIDER_FINALIZATION_STALLED"].includes(
+        code
+      ) ||
+      !shouldAttemptReadonlyTaskFallback({
+        mode: snapshot.mode,
+        prompt: snapshot.prompt,
+        paths: snapshot.paths,
+        workspacePath,
+      })
+    ) {
+      return null;
+    }
+
+    const fallback = await buildReadonlyTaskFallback({
+      mode: snapshot.mode,
+      prompt: snapshot.prompt,
+      paths: snapshot.paths,
+      workspacePath,
+    });
+    if (!fallback) {
+      return null;
+    }
+
+    fallback.summary =
+      snapshot.mode === "plan"
+        ? fallback.summary
+        : `${fallback.summary}${message ? ` (${message})` : ""}`;
+    return fallback;
+  }
+
+  private findLatestTransportSignal(runtimeSignals: TaskRuntimeSignal[]): TaskRuntimeSignal | null {
+    const transportSignals = runtimeSignals
+      .filter(
+        (signal) =>
+          signal.code === "PROVIDER_TRANSPORT_FALLBACK" || signal.code === "PROVIDER_TRANSPORT_RUNTIME_WARNING"
+      )
+      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
+    return transportSignals[0] ?? null;
+  }
+
   private mergeRuntimeSignal(existing: TaskRuntimeSignal[], incoming: TaskRuntimeSignal): TaskRuntimeSignal[] {
     const index = existing.findIndex(
       (item) =>
@@ -753,6 +928,7 @@ export class TaskService implements vscode.Disposable {
       sawTurnCompleted: incoming.sawTurnCompleted ?? existing?.sawTurnCompleted ?? false,
       outputFileStatus: incoming.outputFileStatus ?? existing?.outputFileStatus ?? "not_used",
       finalMessageSource: incoming.finalMessageSource ?? existing?.finalMessageSource ?? "none",
+      finalizationPath: incoming.finalizationPath ?? existing?.finalizationPath ?? "none",
       lastAgentMessagePreview:
         incoming.lastAgentMessagePreview ?? existing?.lastAgentMessagePreview ?? null,
       stdoutEventTail: incoming.stdoutEventTail ?? existing?.stdoutEventTail ?? [],

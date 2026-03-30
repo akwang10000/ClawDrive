@@ -1,12 +1,11 @@
 /* eslint-disable no-console */
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
-const WebSocket = require("ws");
+const { spawnSync } = require("child_process");
 
-const DEFAULT_TIMEOUT_MS = 15000;
-const DEFAULT_POLL_MS = 1500;
-const DEFAULT_POLL_LIMIT_MS = 120000;
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_POLL_MS = 1_500;
+const DEFAULT_POLL_LIMIT_MS = 120_000;
 
 function readOpenClawConfig() {
   const filePath = path.join(process.env.USERPROFILE || process.env.HOME || "", ".openclaw", "openclaw.json");
@@ -14,312 +13,229 @@ function readOpenClawConfig() {
     return null;
   }
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    return JSON.parse(raw);
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
   } catch {
     return null;
   }
 }
 
+function parseBooleanish(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
 function resolveGatewayConfig() {
   const cfg = readOpenClawConfig();
+  const hasUrlOverride = Boolean(
+    process.env.CLAWDRIVE_GATEWAY_HOST ||
+    process.env.CLAWDRIVE_GATEWAY_PORT ||
+    process.env.CLAWDRIVE_GATEWAY_TLS
+  );
   const host = process.env.CLAWDRIVE_GATEWAY_HOST || cfg?.gateway?.host || "127.0.0.1";
   const port = Number(process.env.CLAWDRIVE_GATEWAY_PORT || cfg?.gateway?.port || 18789);
-  const tls = (process.env.CLAWDRIVE_GATEWAY_TLS || cfg?.gateway?.tls || false) === true;
-  const token =
-    process.env.CLAWDRIVE_GATEWAY_TOKEN ||
-    cfg?.gateway?.auth?.token ||
-    cfg?.gateway?.token ||
-    "";
-  return { host, port, tls, token };
+  const tls = parseBooleanish(process.env.CLAWDRIVE_GATEWAY_TLS) || cfg?.gateway?.tls === true;
+  const token = process.env.CLAWDRIVE_GATEWAY_TOKEN || cfg?.gateway?.auth?.token || cfg?.gateway?.token || "";
+  const url = `${tls ? "wss" : "ws"}://${host}:${port}`;
+  return { host, port, tls, token, url, hasUrlOverride };
+}
+
+function resolveOpenClawRunner() {
+  const override = process.env.OPENCLAW_BIN?.trim();
+  if (override) {
+    if (override.endsWith(".mjs")) {
+      return { command: process.execPath, baseArgs: [override], display: override };
+    }
+    return { command: override, baseArgs: [], display: override };
+  }
+
+  if (process.platform === "win32") {
+    const located = spawnSync("where.exe", ["openclaw.cmd"], { encoding: "utf8" });
+    const wrapperPath = located.status === 0
+      ? located.stdout.split(/\r?\n/).map((entry) => entry.trim()).find(Boolean)
+      : null;
+    if (!wrapperPath) {
+      throw new Error("openclaw.cmd not found in PATH.");
+    }
+    const scriptPath = path.join(path.dirname(wrapperPath), "node_modules", "openclaw", "openclaw.mjs");
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`OpenClaw entry script not found: ${scriptPath}`);
+    }
+    return { command: process.execPath, baseArgs: [scriptPath], display: scriptPath };
+  }
+
+  return { command: "openclaw", baseArgs: [], display: "openclaw" };
+}
+
+function buildGatewayCliArgs(gateway) {
+  const args = ["--json"];
+  if (gateway.hasUrlOverride) {
+    args.push("--url", gateway.url);
+  }
+  if (gateway.token) {
+    args.push("--token", gateway.token);
+  }
+  return args;
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function makeId() {
-  return crypto.randomUUID();
+function summarizeOutput(raw) {
+  const lines = String(raw || "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+  return lines.slice(-20).join("\n");
 }
 
-class GatewayRpcClient {
-  constructor(url) {
-    this.url = url;
-    this.ws = null;
-    this.pending = new Map();
-    this.connected = false;
-    this.events = [];
-    this.connectNonce = null;
+function extractLastJsonValue(text) {
+  const raw = String(text || "");
+  const starts = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i];
+    if ((char === "{" || char === "[") && (i === 0 || raw[i - 1] === "\n" || raw[i - 1] === "\r")) {
+      starts.push(i);
+    }
   }
-
-  async connect() {
-    await new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.url);
-      this.ws = ws;
-      ws.on("open", () => {
-        this.connected = true;
-        resolve();
-      });
-      ws.on("close", (code, reason) => {
-        this.connected = false;
-        this.events.push({ type: "close", code, reason: reason?.toString?.() || "" });
-      });
-      ws.on("error", reject);
-      ws.on("message", (data) => this.handleMessage(data.toString()));
-    });
-  }
-
-  handleMessage(raw) {
-    let parsed;
+  for (let i = starts.length - 1; i >= 0; i -= 1) {
+    const candidate = raw.slice(starts[i]).trim();
     try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    if (parsed?.type === "event" || parsed?.event) {
-      this.events.push(parsed);
-      if (parsed.event === "connect.challenge") {
-        this.connectNonce = parsed?.payload?.nonce || null;
-      }
-    }
-    if (parsed?.type === "res" || parsed?.id) {
-      const id = parsed.id;
-      const pending = this.pending.get(id);
-      if (!pending) {
-        return;
-      }
-      this.pending.delete(id);
-      if (parsed.ok) {
-        pending.resolve(parsed.payload ?? parsed);
-      } else {
-        const message =
-          parsed?.error?.message ||
-          parsed?.payload?.error?.message ||
-          parsed?.message ||
-          "unknown error";
-        pending.reject(new Error(message));
-      }
-    }
-  }
-
-  request(method, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
-    return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.connected) {
-        reject(new Error("gateway not connected"));
-        return;
-      }
-      const id = makeId();
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`gateway request timeout: ${method}`));
-      }, timeoutMs);
-      this.pending.set(id, {
-        resolve: (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.ws.send(JSON.stringify({ type: "req", id, method, params }));
-    });
-  }
-
-  close() {
-    this.ws?.close();
-  }
-}
-
-async function tryConnect(rpc, token) {
-  try {
-    const identity = loadOrCreateIdentity();
-    const signedAtMs = Date.now();
-    const nonce = rpc.connectNonce || undefined;
-    const version = nonce ? "v2" : "v1";
-    const clientId = "selftest";
-    const payloadParts = [
-      version,
-      identity.deviceId,
-      clientId,
-      "client",
-      "client",
-      "",
-      String(signedAtMs),
-      token ?? "",
-    ];
-    if (nonce) {
-      payloadParts.push(nonce);
-    }
-    const payload = payloadParts.join("|");
-    const signature = signPayload(identity.privateKeyPem, payload);
-
-    const params = {
-      minProtocol: 3,
-      maxProtocol: 3,
-      client: {
-        id: "selftest",
-        displayName: "ClawDrive Selftest",
-        version: "0.1.0",
-        platform: process.platform,
-        mode: "client",
-        instanceId: makeId(),
-      },
-      role: "client",
-      caps: ["node.invoke"],
-      scopes: [],
-      auth: token ? { token } : undefined,
-      device: {
-        id: identity.deviceId,
-        publicKey: publicKeyRawBase64Url(identity.publicKeyPem),
-        signature,
-        signedAt: signedAtMs,
-        nonce,
-      },
-    };
-    await rpc.request("connect", params);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function discoverNodes(rpc) {
-  const methods = ["nodes.list", "node.list", "nodes.status", "node.status"];
-  for (const method of methods) {
-    try {
-      const payload = await rpc.request(method, {});
-      if (Array.isArray(payload?.nodes)) {
-        return payload.nodes;
-      }
-      if (Array.isArray(payload)) {
-        return payload;
-      }
+      return JSON.parse(candidate);
     } catch {
       continue;
     }
   }
+  return null;
+}
+
+function runOpenClawJson(runner, args, label) {
+  const result = spawnSync(runner.command, [...runner.baseArgs, ...args], {
+    encoding: "utf8",
+    timeout: DEFAULT_POLL_LIMIT_MS + DEFAULT_TIMEOUT_MS,
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    throw new Error(`${label} failed to start: ${result.error.message}`);
+  }
+
+  const combined = [result.stdout || "", result.stderr || ""].filter(Boolean).join("\n");
+  if (result.status !== 0) {
+    throw new Error(`${label} failed: ${summarizeOutput(combined) || `exit ${result.status}`}`);
+  }
+
+  const parsed = extractLastJsonValue(result.stdout || combined);
+  if (parsed === null) {
+    throw new Error(`${label} did not return JSON: ${summarizeOutput(combined)}`);
+  }
+
+  return parsed;
+}
+
+function selectNode(nodes, explicitNodeId, nameHint) {
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    return null;
+  }
+
+  if (explicitNodeId) {
+    return nodes.find((node) => `${node.nodeId || node.id || ""}` === explicitNodeId) || null;
+  }
+
+  const normalizedHint = (nameHint || "").trim().toLowerCase();
+  if (normalizedHint) {
+    const hinted = nodes.filter((node) =>
+      `${node.displayName || node.name || ""}`.toLowerCase().includes(normalizedHint)
+    );
+    const connectedHinted = hinted.find((node) => node.connected);
+    if (connectedHinted) {
+      return connectedHinted;
+    }
+    if (hinted.length > 0) {
+      return hinted[0];
+    }
+  }
+
+  return nodes.find((node) => node.connected) || nodes[0];
+}
+
+function resolveNodeRef(node, explicitNodeId) {
+  if (explicitNodeId) {
+    return explicitNodeId;
+  }
+  return `${node?.displayName || node?.name || node?.nodeId || node?.id || ""}`;
+}
+
+function listNodes(runner, gateway) {
+  const sharedArgs = buildGatewayCliArgs(gateway);
+  const statusPayload = runOpenClawJson(runner, ["nodes", "status", ...sharedArgs], "nodes status");
+  if (Array.isArray(statusPayload?.nodes)) {
+    return statusPayload.nodes;
+  }
+
+  const fallback = runOpenClawJson(runner, ["gateway", "call", "node.list", ...sharedArgs], "gateway call node.list");
+  if (Array.isArray(fallback?.nodes)) {
+    return fallback.nodes;
+  }
+  if (Array.isArray(fallback)) {
+    return fallback;
+  }
   return [];
 }
 
-function selectNode(nodes, nameHint) {
-  if (!nodes || !nodes.length) {
-    return null;
-  }
-  if (nameHint) {
-    const match = nodes.find((node) => `${node.displayName || node.name || ""}`.includes(nameHint));
-    if (match) {
-      return match;
+function invokeNodeCommand(runner, gateway, nodeContext, command, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const invokeArgs = (nodeRef) => [
+    "nodes",
+    "invoke",
+    ...buildGatewayCliArgs(gateway),
+    "--node",
+    nodeRef,
+    "--command",
+    command,
+    "--params",
+    JSON.stringify(params || {}),
+    "--timeout",
+    String(Math.max(timeoutMs, DEFAULT_TIMEOUT_MS)),
+    "--invoke-timeout",
+    String(Math.max(timeoutMs, DEFAULT_TIMEOUT_MS)),
+  ];
+  const unwrapPayload = (value) => (value?.payload !== undefined ? value.payload : value);
+
+  try {
+    return unwrapPayload(runOpenClawJson(runner, invokeArgs(nodeContext.nodeRef), `nodes invoke ${command}`));
+  } catch (error) {
+    if (nodeContext.explicitNodeId || !/unknown node/i.test(String(error?.message || error))) {
+      throw error;
     }
+    const refreshed = selectNode(listNodes(runner, gateway), "", nodeContext.nameHint);
+    const refreshedRef = resolveNodeRef(refreshed, "");
+    if (!refreshed || !refreshedRef || refreshedRef === nodeContext.nodeRef) {
+      throw error;
+    }
+    nodeContext.node = refreshed;
+    nodeContext.nodeRef = refreshedRef;
+    nodeContext.nodeId = refreshed.nodeId || refreshed.id || nodeContext.nodeId;
+    nodeContext.displayName = refreshed.displayName || refreshed.name || nodeContext.displayName;
+    return unwrapPayload(runOpenClawJson(runner, invokeArgs(nodeContext.nodeRef), `nodes invoke ${command}`));
   }
-  return nodes[0];
 }
 
-async function invokeCommand(rpc, nodeId, command, params) {
-  const methods = ["node.invoke", "nodes.invoke", "node.invoke.request"];
-  for (const method of methods) {
-    try {
-      const payload =
-        nodeId !== undefined && nodeId !== null && String(nodeId).length > 0
-          ? await rpc.request(method, { nodeId, command, params })
-          : await rpc.request(method, { command, params });
-      return { method, payload };
-    } catch (error) {
-      if (method === methods[methods.length - 1]) {
-        throw error;
-      }
-    }
-  }
-  throw new Error("invoke method not supported by gateway");
-}
-
-async function waitForTask(rpc, nodeId, taskId) {
+async function waitForTask(runner, gateway, nodeContext, taskId) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < DEFAULT_POLL_LIMIT_MS) {
-    const status = await invokeCommand(rpc, nodeId, "vscode.agent.task.status", { taskId });
-    const snapshot = status.payload;
+    const snapshot = invokeNodeCommand(runner, gateway, nodeContext, "vscode.agent.task.status", { taskId });
     if (snapshot?.state && snapshot.state !== "running" && snapshot.state !== "queued") {
       return snapshot;
     }
     await sleep(DEFAULT_POLL_MS);
   }
   return null;
-}
-
-async function run() {
-  const { host, port, tls, token } = resolveGatewayConfig();
-  const nodeIdOverride = process.env.CLAWDRIVE_NODE_ID || "";
-  const nodeNameHint = process.env.CLAWDRIVE_NODE_NAME || "ClawDrive";
-  const url = `${tls ? "wss" : "ws"}://${host}:${port}`;
-  const rpc = new GatewayRpcClient(url);
-  const report = {
-    gateway: { host, port, tls, url },
-    connectOk: false,
-    node: null,
-    cases: [],
-    errors: [],
-    events: [],
-  };
-
-  await rpc.connect();
-  report.connectOk = await tryConnect(rpc, token);
-  report.events = rpc.events.slice(0, 20);
-  if (!report.connectOk) {
-    report.errors.push("connect rejected or unsupported; check gateway token or protocol.");
-    rpc.close();
-    saveReport(report);
-    printSummary(report);
-    console.log("Tip: run 'ClawDrive: Run Selftest' from VS Code Command Palette to test locally.");
-    process.exit(2);
-  }
-
-  const nodes = nodeIdOverride ? [] : await discoverNodes(rpc);
-  const node = nodeIdOverride
-    ? { id: nodeIdOverride, displayName: nodeIdOverride }
-    : selectNode(nodes, nodeNameHint);
-
-  let nodeId = node?.id || node?.nodeId || null;
-  if (!nodeId) {
-    report.errors.push("No node found. Will attempt blind invoke without nodeId.");
-  } else {
-    report.node = { id: nodeId, displayName: node.displayName || node.name || "" };
-  }
-
-  const prompts = [
-    { name: "inspect", prompt: "列出 src 目录" },
-    { name: "analyze", prompt: "解释这个仓库做什么" },
-    { name: "plan", prompt: "给我两个方案，先别改" },
-    { name: "plan_complex", prompt: "给我三个可行方案，说明影响范围和主要风险，先别改" },
-  ];
-
-  for (const entry of prompts) {
-    const caseResult = { name: entry.name, prompt: entry.prompt, route: null, taskId: null, result: null, error: null };
-    try {
-      const route = await invokeCommand(rpc, nodeId, "vscode.agent.route", { prompt: entry.prompt });
-      caseResult.route = route.payload;
-      if (route.payload?.kind === "task" || route.payload?.kind === "task_result") {
-        const taskId = route.payload?.data?.taskId || route.payload?.data?.snapshot?.taskId;
-        if (taskId) {
-          caseResult.taskId = taskId;
-          const finalSnapshot = await waitForTask(rpc, nodeId, taskId);
-          if (finalSnapshot) {
-            const result = await invokeCommand(rpc, nodeId, "vscode.agent.task.result", { taskId });
-            caseResult.result = result.payload;
-          } else {
-            caseResult.error = "task timeout waiting for completion";
-          }
-        }
-      }
-    } catch (error) {
-      caseResult.error = String(error?.message || error);
-    }
-    report.cases.push(caseResult);
-  }
-
-  rpc.close();
-  saveReport(report);
-  printSummary(report);
 }
 
 function saveReport(report) {
@@ -330,87 +246,144 @@ function saveReport(report) {
 function printSummary(report) {
   console.log("Selftest summary:");
   console.log(`Gateway: ${report.gateway.url}`);
+  console.log(`Driver: ${report.driver}`);
   if (report.node) {
     console.log(`Node: ${report.node.displayName || report.node.id}`);
   }
   for (const entry of report.cases) {
     const status = entry.error
       ? `error: ${entry.error}`
-      : entry.result?.snapshot?.state || entry.route?.kind || "unknown";
+      : entry.result?.snapshot?.state || entry.snapshot?.state || entry.route?.kind || "unknown";
     console.log(`- ${entry.name}: ${status}`);
   }
   console.log("Report written to selftest-report.json");
+}
+
+async function run() {
+  const gateway = resolveGatewayConfig();
+  const runner = resolveOpenClawRunner();
+  const nodeIdOverride = process.env.CLAWDRIVE_NODE_ID || "";
+  const nodeNameHint = process.env.CLAWDRIVE_NODE_NAME || "ClawDrive";
+  const report = {
+    gateway,
+    driver: runner.display,
+    connectOk: false,
+    node: null,
+    cases: [],
+    errors: [],
+    events: [],
+  };
+
+  try {
+    const nodes = listNodes(runner, gateway);
+    report.connectOk = true;
+    const node = selectNode(nodes, nodeIdOverride, nodeNameHint);
+
+    if (!node) {
+      const available = nodes.map((entry) => entry.displayName || entry.nodeId || entry.id).filter(Boolean);
+      report.errors.push(
+        available.length > 0
+          ? `No matching node found. Available nodes: ${available.join(", ")}`
+          : "No nodes reported by OpenClaw."
+      );
+      saveReport(report);
+      printSummary(report);
+      process.exit(3);
+    }
+
+    const nodeContext = {
+      explicitNodeId: nodeIdOverride,
+      nameHint: nodeNameHint,
+      node,
+      nodeRef: resolveNodeRef(node, nodeIdOverride),
+      nodeId: node.nodeId || node.id || null,
+      displayName: node.displayName || node.name || null,
+    };
+
+    report.node = {
+      id: node.nodeId || node.id || nodeContext.nodeRef,
+      displayName: node.displayName || node.name || nodeContext.nodeRef,
+      connected: node.connected === true,
+      paired: node.paired === true,
+    };
+
+    const prompts = [
+      { name: "inspect", prompt: "List the top-level folders and files in the current workspace." },
+      {
+        name: "analyze",
+        prompt: "Explain why this workspace is structured this way and what design constraints it appears to optimize for.",
+      },
+      { name: "plan", prompt: "Give me two safe next-step options for investigating this workspace. Do not modify anything." },
+      {
+        name: "plan_complex",
+        prompt: "Give me three feasible next-step options for this workspace, explain impact scope and main risks, and do not modify anything yet.",
+      },
+    ];
+
+    for (const entry of prompts) {
+      const caseResult = {
+        name: entry.name,
+        prompt: entry.prompt,
+        route: null,
+        taskId: null,
+        snapshot: null,
+        result: null,
+        error: null,
+      };
+
+      try {
+        const route = invokeNodeCommand(runner, gateway, nodeContext, "vscode.agent.route", { prompt: entry.prompt }, 30_000);
+        caseResult.route = route;
+
+        if (route?.kind === "task" || route?.kind === "task_result") {
+          const taskId = route?.data?.taskId || route?.data?.snapshot?.taskId || null;
+          if (taskId) {
+            caseResult.taskId = taskId;
+            const finalSnapshot = await waitForTask(runner, gateway, nodeContext, taskId);
+            if (finalSnapshot) {
+              caseResult.snapshot = finalSnapshot;
+              caseResult.result = invokeNodeCommand(
+                runner,
+                gateway,
+                nodeContext,
+                "vscode.agent.task.result",
+                { taskId },
+                30_000
+              );
+            } else {
+              caseResult.error = "task timeout waiting for completion";
+            }
+          }
+        } else if (route?.kind === "task_result") {
+          caseResult.snapshot = route?.data?.snapshot || null;
+          caseResult.result = route?.data || null;
+        }
+      } catch (error) {
+        caseResult.error = String(error?.message || error);
+      }
+
+      report.cases.push(caseResult);
+    }
+
+    report.node = {
+      id: nodeContext.nodeId || nodeContext.nodeRef,
+      displayName: nodeContext.displayName || nodeContext.nodeRef,
+      connected: nodeContext.node?.connected === true,
+      paired: nodeContext.node?.paired === true,
+    };
+  } catch (error) {
+    report.errors.push(String(error?.message || error));
+    saveReport(report);
+    printSummary(report);
+    console.log("Tip: run 'ClawDrive: Run Selftest' from VS Code Command Palette to test locally.");
+    process.exit(2);
+  }
+
+  saveReport(report);
+  printSummary(report);
 }
 
 run().catch((error) => {
   console.error(`Selftest failed: ${error?.message || error}`);
   process.exit(1);
 });
-
-function loadOrCreateIdentity() {
-  const home = process.env.USERPROFILE || process.env.HOME || "";
-  const legacyPath = path.join(home, ".openclaw-vscode", "device.json");
-  const preferredPath = legacyPath;
-  const identity = tryLoadIdentity(preferredPath);
-  if (identity) {
-    return identity;
-  }
-  const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
-  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
-  const deviceId = fingerprintPublicKey(publicKeyPem);
-  const created = { version: 1, deviceId, privateKeyPem, publicKeyPem, createdAtMs: Date.now() };
-  fs.mkdirSync(path.dirname(preferredPath), { recursive: true });
-  fs.writeFileSync(preferredPath, `${JSON.stringify(created, null, 2)}\n`, "utf8");
-  return { deviceId, privateKeyPem, publicKeyPem };
-}
-
-function tryLoadIdentity(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) {
-      return null;
-    }
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.publicKeyPem !== "string" || typeof parsed.privateKeyPem !== "string") {
-      return null;
-    }
-    const deviceId = fingerprintPublicKey(parsed.publicKeyPem);
-    return {
-      deviceId,
-      privateKeyPem: parsed.privateKeyPem,
-      publicKeyPem: parsed.publicKeyPem,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function fingerprintPublicKey(publicKeyPem) {
-  const key = crypto.createPublicKey(publicKeyPem);
-  const spki = key.export({ type: "spki", format: "der" });
-  const prefix = Buffer.from("302a300506032b6570032100", "hex");
-  const raw = spki.length === prefix.length + 32 && spki.subarray(0, prefix.length).equals(prefix)
-    ? spki.subarray(prefix.length)
-    : spki;
-  return crypto.createHash("sha256").update(raw).digest("hex");
-}
-
-function publicKeyRawBase64Url(publicKeyPem) {
-  const key = crypto.createPublicKey(publicKeyPem);
-  const spki = key.export({ type: "spki", format: "der" });
-  const prefix = Buffer.from("302a300506032b6570032100", "hex");
-  const raw = spki.length === prefix.length + 32 && spki.subarray(0, prefix.length).equals(prefix)
-    ? spki.subarray(prefix.length)
-    : spki;
-  return base64UrlEncode(raw);
-}
-
-function signPayload(privateKeyPem, payload) {
-  const signature = crypto.sign(null, Buffer.from(payload, "utf8"), crypto.createPrivateKey(privateKeyPem));
-  return base64UrlEncode(signature);
-}
-
-function base64UrlEncode(buf) {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}

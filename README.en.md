@@ -19,6 +19,7 @@ Validated paths now include:
 - persisted task snapshots and event history
 - recovery for `waiting_decision`, `waiting_approval`, and `interrupted`
 - a VS Code `ClawDrive Activity` task view
+- a `ClawDrive: Dashboard` console with recent task visibility plus local cancel/delete controls
 - the first `apply` thin slice with structured edits, explicit approval, and local controlled writes
 
 Validated end-to-end flows:
@@ -50,6 +51,11 @@ Implemented long-task modes:
 - `analyze`
 - `plan`
 - `apply`
+
+Direct `vscode.agent.task.start` callers may also use compatibility aliases:
+
+- `ask`, `chat`, `analysis`, `analyse` -> `analyze`
+- `edit` -> `apply`
 
 Current task states:
 
@@ -99,10 +105,10 @@ Actual writes are performed by a local VS Code execution layer with:
 Recommended setup flow:
 
 1. Open `ClawDrive: Settings`.
-2. Configure Gateway host, port, token, and provider settings.
-3. Leave auto-connect enabled unless you explicitly want manual connection.
-4. Save settings and let the extension connect.
-5. Use `ClawDrive: Dashboard`, `ClawDrive Activity`, or the `ClawDrive` output log only when you need verification or diagnosis.
+2. Configure Gateway host, port, token, and provider settings (including `clawdrive.provider.sandboxMode` if needed).
+3. Expect auto-connect to be off by default unless you explicitly enable it.
+4. Click `Save and Connect` to apply the settings and connect immediately. The auto-connect switch only affects later startup.
+5. Use `ClawDrive: Dashboard` when you need connection status, recent tracked tasks, or quick cancel/delete actions. Use `ClawDrive Activity` or the `ClawDrive` output log for deeper inspection.
 
 If the Gateway uses `gateway.nodes.allowCommands`, keep the allowlist aligned with the extension's advertised surface.
 At minimum, allow:
@@ -119,6 +125,8 @@ At minimum, allow:
 - `vscode.agent.task.respond`
 - `vscode.agent.task.cancel`
 - `vscode.agent.task.result`
+
+Dashboard task management is local extension UI only. It does not add new remote `vscode.agent.task.*` commands.
 
 Provider execution may still emit helper, sandbox, or transport-layer warnings.
 The current objective is:

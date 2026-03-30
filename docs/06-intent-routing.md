@@ -54,6 +54,7 @@ Examples:
 
 - summarize this repository
 - explain how the gateway works
+- explain the provider contract
 - compare two implementations
 
 Expected route:
@@ -66,6 +67,7 @@ Expected behavior:
 - read-first
 - no file mutation
 - concise explanation back to the user
+- do not treat a generic mention of `provider` as a diagnosis request by itself
 
 ### Plan And Choose
 
@@ -135,6 +137,7 @@ The routing layer should follow these rules in order.
 5. Treat `continue`, `keep going`, or `use the recommended one` as task-resolution requests before treating them as new work.
 6. Hide command names, task identifiers, and JSON payloads unless the user is debugging or asks for them directly.
 7. When a task must pause for a choice, surface the choice in plain language and keep the recommended option obvious.
+8. Route into diagnosis only for explicit status, readiness, connection, or failure-debugging prompts. Architecture questions that mention `provider` still belong to inspect or analyze.
 
 ## Provider-Neutral Execution Model
 

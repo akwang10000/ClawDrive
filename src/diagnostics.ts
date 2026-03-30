@@ -199,6 +199,18 @@ function buildActionableHint(
   }
 
   if (latestTask?.state === "failed") {
+    if (latestTask.errorCode === "PROVIDER_TRANSPORT_FAILED") {
+      if (isMissingContentTypeTransportWarning(findTransportSignal(latestTask))) {
+        return localizedText(
+          "Provider transport failed after the downstream service returned an invalid or empty response. Check MCP, relay, or provider-gateway compatibility and ensure HTTP responses include a content-type.",
+          "Provider transport \u5931\u8d25\uff0c\u56e0\u4e3a\u4e0b\u6e38\u670d\u52a1\u8fd4\u56de\u4e86\u65e0\u6548\u6216\u7a7a\u54cd\u5e94\uff0c\u8bf7\u68c0\u67e5 MCP\u3001relay \u6216 provider gateway \u517c\u5bb9\u6027\uff0c\u5e76\u786e\u4fdd HTTP \u54cd\u5e94\u5305\u542b content-type\u3002"
+        );
+      }
+      return localizedText(
+        "Provider transport failed. Check the downstream MCP service status and ensure HTTP responses include a valid content-type.",
+        "Provider transport \u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u4e0b\u6e38 MCP \u670d\u52a1\u662f\u5426\u53ef\u7528\uff0c\u5e76\u786e\u4fdd HTTP \u54cd\u5e94\u5305\u542b\u5408\u6cd5\u7684 content-type\u3002"
+      );
+    }
     return localizedText(
       "Inspect the latest failed task summary and error code before re-running the task.",
       "\u5148\u67e5\u770b\u6700\u8fd1\u5931\u8d25\u4efb\u52a1\u7684\u6458\u8981\u548c\u9519\u8bef\u7801\uff0c\u518d\u51b3\u5b9a\u662f\u5426\u91cd\u8bd5\u3002"
@@ -238,6 +250,22 @@ function buildActionableHint(
       "Resume the interrupted task before starting a new one.",
       "\u5148\u6062\u590d\u88ab\u4e2d\u65ad\u7684\u4efb\u52a1\uff0c\u518d\u51b3\u5b9a\u662f\u5426\u65b0\u5f00\u4efb\u52a1\u3002"
     );
+  }
+
+  if (latestTask?.state === "running") {
+    const transportWarning = findTransportSignal(latestTask);
+    if (transportWarning) {
+      if (isMissingContentTypeTransportWarning(transportWarning)) {
+        return localizedText(
+          "The latest task reached Codex and saw a downstream transport warning about a missing content-type or empty body. It may still recover, but if it remains stuck after turn.started, check MCP, relay, or provider-gateway compatibility.",
+          "\u6700\u8fd1\u4efb\u52a1\u5df2\u7ecf\u5230\u8fbe Codex\uff0c\u5e76\u89c2\u5bdf\u5230\u4e0b\u6e38 transport \u7684\u7f3a\u5931 content-type \u6216\u7a7a body \u544a\u8b66\u3002\u5b83\u4ecd\u53ef\u80fd\u6062\u590d\uff0c\u4f46\u5982\u679c\u5728 turn.started \u4e4b\u540e\u4ecd\u957f\u65f6\u95f4\u5361\u4f4f\uff0c\u8bf7\u68c0\u67e5 MCP\u3001relay \u6216 provider gateway \u7684\u517c\u5bb9\u6027\u3002"
+        );
+      }
+      return localizedText(
+        "The latest task reached Codex and saw a provider transport warning before the final result arrived. It may still recover, but repeated stalls should be investigated in the downstream MCP or provider transport layer.",
+        "\u6700\u8fd1\u4efb\u52a1\u5df2\u7ecf\u5230\u8fbe Codex\uff0c\u4f46\u5728\u6700\u7ec8\u7ed3\u679c\u5230\u8fbe\u524d\u51fa\u73b0\u4e86 provider transport \u544a\u8b66\u3002\u5b83\u4ecd\u53ef\u80fd\u6062\u590d\uff0c\u4f46\u82e5\u53cd\u590d\u5361\u4f4f\uff0c\u4ecd\u5e94\u8c03\u67e5\u4e0b\u6e38 MCP \u6216 provider transport \u5c42\u3002"
+      );
+    }
   }
 
   if (latestTask?.state === "running" && isProviderTurnStalled(latestTask)) {
@@ -418,7 +446,7 @@ export function buildOperatorStatusFromDiagnosis(
   const latestFailureSummary =
     latest?.state === "failed"
       ? latest.errorCode
-        ? `${latest.errorCode}: ${latest.error ?? latest.summary}`
+        ? `${latest.errorCode}: ${latest.error ?? latest.summary}${formatTransportDetail(latest)}`
         : latest.error ?? latest.summary
       : null;
   const latestFatalSummary =
@@ -520,4 +548,38 @@ function isProviderTurnStalled(task: DiagnosisTaskSummary | null): boolean {
     !evidence.lastAgentMessagePreview &&
     evidence.finalMessageSource === "none"
   );
+}
+
+function findTransportSignal(task: DiagnosisTaskSummary | null): TaskRuntimeSignal | null {
+  if (!task) {
+    return null;
+  }
+  return (
+    task.runtimeSignals.find(
+      (item) => item.code === "PROVIDER_TRANSPORT_RUNTIME_WARNING" || item.code === "PROVIDER_TRANSPORT_FALLBACK"
+    ) ?? null
+  );
+}
+
+function isMissingContentTypeTransportWarning(signal: TaskRuntimeSignal | null): boolean {
+  if (!signal) {
+    return false;
+  }
+  const detail = `${signal.summary} ${signal.detail ?? ""}`.toLowerCase();
+  return detail.includes("unexpectedcontenttype") || detail.includes("missing-content-type");
+}
+
+function formatTransportDetail(latest: DiagnosisTaskSummary | null): string {
+  if (!latest || latest.errorCode !== "PROVIDER_TRANSPORT_FAILED") {
+    return "";
+  }
+  const signal = findTransportSignal(latest);
+  if (!signal) {
+    return "";
+  }
+  const detail = signal.detail ?? signal.summary;
+  if (!detail) {
+    return "";
+  }
+  return ` (${detail})`;
 }

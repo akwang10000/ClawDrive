@@ -11,5 +11,8 @@
   "package.config.gateway.tls": "Use TLS when connecting to the Gateway.",
   "package.config.gateway.token": "Gateway token for ClawDrive.",
   "package.config.autoConnect": "Automatically connect to the Gateway on startup.",
-  "package.config.displayName": "Display name advertised by the extension."
+  "package.config.displayName": "Display name advertised by the extension.",
+  "package.config.provider.policyLevel": "Controls provider runtime isolation. safe uses an isolated task home, extended derives and sanitizes one from your local Codex home, and raw reuses the source CODEX_HOME directly.",
+  "package.config.provider.disableFeatures": "Codex startup features to force off for task runs. Clear this list to stop disabling startup features experimentally.",
+  "package.config.provider.sandboxMode": "Controls the sandbox policy for provider shell commands. read-only is default; workspace-write allows workspace changes; danger-full-access removes sandboxing."
 }

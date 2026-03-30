@@ -64,6 +64,16 @@ export class TaskStorage {
     await fs.appendFile(this.eventsPath(event.taskId), `${JSON.stringify(event)}\n`, "utf8");
   }
 
+  async deleteTask(taskId: string): Promise<void> {
+    await this.initialize();
+    const index = await this.readIndex();
+    const nextOrder = index.order.filter((entry) => entry !== taskId);
+    await fs.rm(this.taskDir(taskId), { recursive: true, force: true });
+    if (nextOrder.length !== index.order.length) {
+      await this.writeIndex({ order: nextOrder });
+    }
+  }
+
   async readEvents(taskId: string): Promise<TaskEventRecord[]> {
     try {
       const raw = await fs.readFile(this.eventsPath(taskId), "utf8");
@@ -90,8 +100,7 @@ export class TaskStorage {
       const terminal =
         snapshot.state === "completed" ||
         snapshot.state === "failed" ||
-        snapshot.state === "cancelled" ||
-        snapshot.state === "interrupted";
+        snapshot.state === "cancelled";
 
       if (terminal) {
         terminalCount += 1;

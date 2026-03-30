@@ -38,7 +38,7 @@ export function classifyIntent(prompt: string, paths: string[]): RouteIntent {
   if (matchesAny(prompt, blockedPatterns)) {
     return { type: "blocked" };
   }
-  if (matchesAny(prompt, applyPatterns)) {
+  if (matchesAny(prompt, applyPatterns) && !hasReadOnlyNoWriteConstraint(prompt)) {
     return { type: "apply" };
   }
   if (matchesAny(prompt, extensionAuditPatterns)) {
@@ -179,6 +179,10 @@ function matchesAny(prompt: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(prompt));
 }
 
+function hasReadOnlyNoWriteConstraint(prompt: string): boolean {
+  return matchesAny(prompt, readOnlyNoWritePatterns);
+}
+
 const continuePatterns = [
   /\b(continue|keep going|resume)\b/i,
   /\buse the recommended (option|one|plan)\b/i,
@@ -208,8 +212,7 @@ const rejectionPatterns = [
 ];
 
 const planPatterns = [
-  /\b(plan first|give me (two|2|three|3|several)?\s*options?|trade-?offs?|let me decide|do not modify|don't modify|no changes yet)\b/i,
-  /\u5148\u522b\u6539/,
+  /\b(plan first|give me (two|2|three|3|several)?\s*options?|trade-?offs?|let me decide)\b/i,
   /\u6211\u6765\u51b3\u5b9a/,
   /\u7ed9\u6211.*\u65b9\u6848/,
   /\u51e0\u4e2a\u65b9\u6848/,
@@ -220,18 +223,21 @@ const planPatterns = [
 ];
 
 const diagnosePatterns = [
-  /\b(connection status|provider status|provider ready|not callable|connected but not callable|why .*fail|why .*provider|why .*connect|what status|why .*error)\b/i,
+  /\b(connection status|provider status|provider readiness|provider ready|provider not ready|task status|runtime health|not callable|connected but not callable|what status)\b/i,
   /\bdiagnose( the)? connection\b/i,
+  /\b(debug|diagnose)\b.*\b(provider|task|connection|status|readiness|callable|failure|error)\b/i,
+  /\b(check|inspect)\b.*\b(connection|status|readiness|callable)\b/i,
+  /\bwhy .*\b(fail|failed|failure|connect|connected|disconnect|disconnected|error|errors|not callable|not ready)\b/i,
   /\u8fde\u63a5\u72b6\u6001/,
   /\u53ef\u8c03\u7528/,
-  /\bprovider\b/i,
   /\u8282\u70b9\u72b6\u6001/,
   /\u4e3a\u4ec0\u4e48.*\u5931\u8d25/,
   /\u4e3a\u4ec0\u4e48.*\u62a5\u9519/,
   /\u4e3a\u4ec0\u4e48.*\u8fde/,
   /\u4efb\u52a1.*\u62a5\u9519/,
   /\u68c0\u67e5.*\u8fde\u63a5/,
-  /\u68c0\u67e5.*provider/i,
+  /\u68c0\u67e5.*(\u72b6\u6001|\u5c31\u7eea|\u53ef\u8c03\u7528)/,
+  /provider.*(\u72b6\u6001|\u5c31\u7eea|\u53ef\u8c03\u7528)/i,
   /\u73b0\u5728\u4ec0\u4e48\u72b6\u6001/,
 ];
 
@@ -247,6 +253,13 @@ const applyPatterns = [
   /\u5199\u5165/,
   /\u5e94\u7528/,
   /\u66f4\u65b0\u4ee3\u7801/,
+];
+
+const readOnlyNoWritePatterns = [
+  /\b(read-?only|analysis only|analyze only|analyse only|keep this as analysis only|do not modify|don't modify|no changes? yet|without modifying|without changing)\b/i,
+  /\u5148\u522b\u6539/,
+  /\u522b\u6539/,
+  /\u4e0d\u8981\u6539/,
 ];
 
 const workspacePatterns = [

@@ -31,6 +31,12 @@ The current implementation exposes:
 - `plan`
 - `apply`
 
+Canonical internal modes remain those three.
+For direct `vscode.agent.task.start` callers, the command layer also accepts compatibility aliases:
+
+- `ask`, `chat`, `analysis`, `analyse` -> `analyze`
+- `edit` -> `apply`
+
 Meaning:
 
 - `analyze`: repository understanding, explanation, comparison, summary
@@ -121,6 +127,7 @@ Current guarantees:
 - terminal history is pruned by a limit
 - a task that was `running` during shutdown is restored as `interrupted`
 - a task that was `waiting_decision` or `waiting_approval` remains resumable after restart
+- a task that was restored as `interrupted` remains resumable and is not treated as terminal history for pruning
 
 ## Decision Contract
 
@@ -157,6 +164,7 @@ Rules:
 - then the latest `running` or `queued`
 - explicit approval or rejection phrases prefer the latest `waiting_approval`
 - if multiple tasks are plausible at the same priority, routing should return a plain-language clarification list instead of guessing
+- cancelling an active task should return only after the task settles into its post-abort state, normally `cancelled`
 
 ## Provider Reality
 

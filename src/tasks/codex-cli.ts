@@ -19,7 +19,9 @@ export interface BuildExecArgsOptions {
   model?: string;
   schemaPath?: string;
   outputPath?: string;
+  sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
   capabilities: CodexCliCapabilities;
+  disabledFeatures?: readonly string[];
 }
 
 export interface BuildResumeArgsOptions {
@@ -29,9 +31,23 @@ export interface BuildResumeArgsOptions {
   model?: string;
   outputPath?: string;
   capabilities: CodexCliCapabilities;
+  disabledFeatures?: readonly string[];
 }
 
 const BARE_EXECUTABLE = /^[A-Za-z0-9._-]+(?:\.exe|\.cmd|\.bat)?$/;
+const TASK_DISABLED_FEATURES = ["multi_agent", "plugins", "apps", "shell_snapshot"] as const;
+
+function isTransportContentTypeIssue(normalized: string): boolean {
+  return normalized.includes("unexpectedcontenttype") || normalized.includes("missing-content-type");
+}
+
+function isTransportChannelClosedIssue(normalized: string): boolean {
+  return normalized.includes("transport channel closed") || normalized.includes("stream closed before response.completed");
+}
+
+function isTransportBodyDecodeIssue(normalized: string): boolean {
+  return normalized.includes("stream disconnected before completion") || normalized.includes("error decoding response body");
+}
 
 export function validateCodexExecutablePath(configuredPath: string): void {
   const trimmed = configuredPath.trim();
@@ -53,11 +69,10 @@ export function detectCodexCliCapabilities(rootHelp: string, execHelp: string, r
 }
 
 export function buildCodexExecArgs(options: BuildExecArgsOptions): string[] {
-  const args = buildBaseArgs(options.workspacePath, options.model, options.capabilities);
-  args.push("exec", "--json", "--sandbox", "read-only");
-  if (!options.workspacePath) {
-    args.push("--skip-git-repo-check");
-  }
+  const args = buildBaseArgs(options.workspacePath, options.model, options.capabilities, options.disabledFeatures);
+  const sandboxMode = options.sandboxMode ?? "read-only";
+  args.push("exec", "--json", "--sandbox", sandboxMode);
+  args.push("--skip-git-repo-check");
   if (options.schemaPath) {
     args.push("--output-schema", options.schemaPath);
   } else if (options.outputPath && options.capabilities.supportsOutputLastMessage) {
@@ -68,11 +83,9 @@ export function buildCodexExecArgs(options: BuildExecArgsOptions): string[] {
 }
 
 export function buildCodexResumeArgs(options: BuildResumeArgsOptions): string[] {
-  const args = buildBaseArgs(options.workspacePath, options.model, options.capabilities);
+  const args = buildBaseArgs(options.workspacePath, options.model, options.capabilities, options.disabledFeatures);
   args.push("exec", "resume", "--json");
-  if (!options.workspacePath) {
-    args.push("--skip-git-repo-check");
-  }
+  args.push("--skip-git-repo-check");
   if (options.outputPath && options.capabilities.supportsResumeOutputLastMessage) {
     args.push("--output-last-message", options.outputPath);
   }
@@ -83,14 +96,6 @@ export function buildCodexResumeArgs(options: BuildResumeArgsOptions): string[] 
 export function classifyCodexCliFailure(error: unknown): CodexCliFailure {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
-
-  if (normalized.includes("transport channel closed") || normalized.includes("unexpectedcontenttype")) {
-    return {
-      code: "PROVIDER_TRANSPORT_FAILED",
-      message:
-        "Codex transport failed while talking to a downstream service. Check external MCP or model-provider compatibility.",
-    };
-  }
 
   if (
     normalized.includes("401 unauthorized") ||
@@ -162,10 +167,41 @@ export function classifyCodexCliFailure(error: unknown): CodexCliFailure {
     };
   }
 
+  if (isTransportContentTypeIssue(normalized)) {
+    return {
+      code: "PROVIDER_TRANSPORT_FAILED",
+      message:
+        "Codex transport received an invalid downstream response (missing content-type or empty body). Check downstream MCP, relay, or model-provider compatibility.",
+    };
+  }
+
+  if (isTransportChannelClosedIssue(normalized)) {
+    return {
+      code: "PROVIDER_TRANSPORT_FAILED",
+      message:
+        "Codex transport failed while talking to a downstream service. Check external MCP or model-provider compatibility.",
+    };
+  }
+
+  if (isTransportBodyDecodeIssue(normalized)) {
+    return {
+      code: "PROVIDER_TRANSPORT_FAILED",
+      message:
+        "Codex transport failed while decoding a downstream streaming response. Check the configured relay, proxy, or model-provider compatibility.",
+    };
+  }
+
   if (normalized.includes("stalled after turn start without producing a usable result")) {
     return {
       code: "PROVIDER_RESULT_STALLED",
       message: "Codex started the task but stopped making usable progress before producing a result.",
+    };
+  }
+
+  if (normalized.includes("turn did not complete")) {
+    return {
+      code: "PROVIDER_TURN_STALLED",
+      message: "Codex started a turn but never reached completion within the expected window.",
     };
   }
 
@@ -212,15 +248,6 @@ export function classifyCodexRuntimeSignal(line: string): Omit<TaskRuntimeSignal
     };
   }
 
-  if (normalized.includes("unknown feature key in config") || normalized.includes("helper")) {
-    return {
-      code: "PROVIDER_RUNTIME_HELPER_WARNING",
-      severity: "noise",
-      summary: "Provider emitted a non-fatal helper or startup warning.",
-      detail: trimmed,
-    };
-  }
-
   if (
     normalized.includes("blocked by policy") ||
     normalized.includes("command is not permitted") ||
@@ -235,11 +262,39 @@ export function classifyCodexRuntimeSignal(line: string): Omit<TaskRuntimeSignal
   }
 
   if (
+    normalized.includes("helper_firewall_rule_create_or_add_failed") ||
+    (normalized.includes("windows sandbox") && normalized.includes("helper"))
+  ) {
+    return {
+      code: "PROVIDER_WINDOWS_SANDBOX_WARNING",
+      severity: "degraded",
+      summary: "Windows sandbox helper blocked command execution; provider fell back to best-effort reasoning.",
+      detail: trimmed,
+    };
+  }
+
+  if (
+    normalized.includes("unknown feature key in config") ||
+    (normalized.includes("helper") &&
+      !normalized.includes("helper_firewall_rule_create_or_add_failed") &&
+      !(normalized.includes("windows sandbox") && normalized.includes("helper")))
+  ) {
+    return {
+      code: "PROVIDER_RUNTIME_HELPER_WARNING",
+      severity: "noise",
+      summary: "Provider emitted a non-fatal helper or startup warning.",
+      detail: trimmed,
+    };
+  }
+
+  if (
     normalized.includes("falling back to http") ||
     normalized.includes("falling back from websockets to https transport") ||
     normalized.includes("startup websocket prewarm setup failed") ||
     normalized.includes("failed to connect to websocket") ||
     normalized.includes("reconnecting...") ||
+    normalized.includes("stream disconnected before completion") ||
+    normalized.includes("error decoding response body") ||
     normalized.includes("currently experiencing high demand")
   ) {
     return {
@@ -250,11 +305,20 @@ export function classifyCodexRuntimeSignal(line: string): Omit<TaskRuntimeSignal
     };
   }
 
-  if (normalized.includes("transport channel closed") || normalized.includes("unexpectedcontenttype")) {
+  if (isTransportContentTypeIssue(normalized)) {
     return {
       code: "PROVIDER_TRANSPORT_RUNTIME_WARNING",
       severity: "degraded",
-      summary: "Provider transport emitted a non-fatal runtime warning.",
+      summary: "Provider transport received an invalid or empty downstream response.",
+      detail: trimmed,
+    };
+  }
+
+  if (isTransportChannelClosedIssue(normalized)) {
+    return {
+      code: "PROVIDER_TRANSPORT_RUNTIME_WARNING",
+      severity: "degraded",
+      summary: "Provider transport channel closed before the result stream completed.",
       detail: trimmed,
     };
   }
@@ -302,20 +366,20 @@ export function classifyCodexRuntimeSignal(line: string): Omit<TaskRuntimeSignal
 export function sanitizeCodexConfig(raw: string): string {
   const lines = raw.replace(/^\uFEFF/, "").split(/\r?\n/);
   const sanitized: string[] = [];
-  let skippingMcpSection = false;
+  let skippingTaskSection = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
     const isHeader = /^\[.*\]$/.test(trimmed);
 
     if (isHeader) {
-      skippingMcpSection = /^\[\[?\s*mcp_servers(?:[.\]])/i.test(trimmed);
-      if (skippingMcpSection) {
+      skippingTaskSection = /^\[\[?\s*(?:mcp_servers|features)(?:[.\]])/i.test(trimmed);
+      if (skippingTaskSection) {
         continue;
       }
     }
 
-    if (skippingMcpSection) {
+    if (skippingTaskSection) {
       continue;
     }
 
@@ -325,12 +389,24 @@ export function sanitizeCodexConfig(raw: string): string {
   return sanitized.join("\n").trimEnd() + "\n";
 }
 
-function buildBaseArgs(workspacePath: string | null, model: string | undefined, capabilities: CodexCliCapabilities): string[] {
+function buildBaseArgs(
+  workspacePath: string | null,
+  model: string | undefined,
+  capabilities: CodexCliCapabilities,
+  disabledFeatures: readonly string[] = TASK_DISABLED_FEATURES
+): string[] {
   const args: string[] = [];
   if (capabilities.supportsAskForApproval) {
     args.push("--ask-for-approval", "never");
   }
   args.push("-c", "shell_environment_policy.inherit=all");
+  if (process.platform === "win32") {
+    // Avoid UAC prompts from the elevated Windows sandbox for unattended task runs.
+    args.push("-c", "windows.sandbox=unelevated");
+  }
+  for (const feature of disabledFeatures) {
+    args.push("-c", `features.${feature}=false`);
+  }
   if (workspacePath) {
     args.push("-C", workspacePath);
   }

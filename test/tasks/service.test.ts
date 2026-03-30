@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "fs/promises";
 import { TaskService } from "../../src/tasks/service";
 import { TaskStorage } from "../../src/tasks/storage";
 import type { ProviderProbeResult, ProviderRunCallbacks, ProviderRunContext, TaskProvider } from "../../src/tasks/provider";
@@ -145,6 +146,101 @@ test("TaskService returns provider evidence through task.result", async () => {
   ]);
 });
 
+test("TaskService allows read-only analyze prompts that mention do not modify", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-analyze-readonly");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(context) {
+      assert.equal(context.mode, "analyze");
+      return {
+        summary: "Analysis complete.",
+        output: "Read-only analysis.",
+        decision: null,
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({
+    prompt: "Analyze the repository purpose and task pipeline. Do not modify files.",
+    mode: "analyze",
+  });
+  const completed = await waitForTaskState(service, queued.taskId, "completed");
+  assert.equal(completed.resultSummary, "Analysis complete.");
+  assert.equal(completed.errorCode, null);
+});
+
+test("TaskService still blocks explicit write requests in analyze mode", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-analyze-blocked");
+  setWorkspaceRoot(rootPath);
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () =>
+      new FakeProvider({
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      }),
+  });
+  await service.initialize();
+
+  await assert.rejects(
+    () => service.startTask({ prompt: "Modify README.md to add setup steps.", mode: "analyze" }),
+    (error: unknown) => {
+      assert.match(String(error), /apply mode|规划方案/i);
+      return true;
+    }
+  );
+});
+
+test("TaskService coalesces concurrent provider refreshes into a single probe", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-provider-refresh");
+  setWorkspaceRoot(rootPath);
+
+  let createCount = 0;
+  let probeCount = 0;
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => {
+      createCount += 1;
+      return new FakeProvider({
+        async probe() {
+          probeCount += 1;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return { ready: true, state: "ready", detail: "ok" };
+        },
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      });
+    },
+  });
+
+  await service.initialize({ probeProvider: false });
+  const [left, right] = await Promise.all([service.refreshProviderStatus(), service.refreshProviderStatus()]);
+
+  assert.equal(left.state, "ready");
+  assert.equal(right.state, "ready");
+  assert.equal(probeCount, 1);
+  assert.equal(createCount, 2);
+});
+
 test("TaskService restore converts running tasks to interrupted", async () => {
   const rootPath = await makeTempDir("clawdrive-task-restore");
   setWorkspaceRoot(rootPath);
@@ -200,6 +296,142 @@ test("TaskService timeout is marked differently from cancellation", async () => 
   const queued = await service.startTask({ prompt: "explain the repo", mode: "analyze" });
   const failed = await waitForTaskState(service, queued.taskId, "failed", 8_000);
   assert.equal(failed.errorCode, "TASK_TIMEOUT");
+});
+
+test("TaskService active cancellation returns the settled cancelled snapshot", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-cancel");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks, signal) {
+      callbacks.onProgress("Running analysis.");
+      return await new Promise<TaskRunResult>((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => setTimeout(() => reject(new Error(String(signal.reason ?? "aborted"))), 50),
+          { once: true }
+        );
+      });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ tasksDefaultTimeoutMs: 5_000 }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "explain the repo", mode: "analyze" });
+  await waitForTaskCondition(service, queued.taskId, (task) => task.state === "running");
+
+  const cancelled = await service.cancelTask(queued.taskId);
+  assert.equal(cancelled.state, "cancelled");
+  assert.equal(cancelled.summary, "Task cancelled.");
+
+  const stored = await waitForTaskState(service, queued.taskId, "cancelled");
+  assert.equal(stored.state, "cancelled");
+});
+
+test("TaskService deleteTask removes a terminal task from memory and persisted storage", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-delete-terminal");
+  setWorkspaceRoot(rootPath);
+
+  const storage = new TaskStorage(rootPath, 20);
+  await storage.initialize();
+  await storage.saveSnapshot(
+    makeSnapshot({
+      taskId: "completed-task",
+      state: "completed",
+      updatedAt: "2026-03-21T12:02:00.000Z",
+    })
+  );
+  await storage.saveSnapshot(
+    makeSnapshot({
+      taskId: "failed-task",
+      state: "failed",
+      updatedAt: "2026-03-21T12:01:00.000Z",
+    })
+  );
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () =>
+      new FakeProvider({
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      }),
+  });
+  await service.initialize();
+
+  await service.deleteTask("completed-task");
+
+  assert.deepEqual(
+    service.listAllTasks().map((task) => task.taskId),
+    ["failed-task"]
+  );
+  assert.equal(await storage.readSnapshot("completed-task"), null);
+  assert.ok(await storage.readSnapshot("failed-task"));
+
+  const restored = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () =>
+      new FakeProvider({
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      }),
+  });
+  await restored.initialize();
+  assert.deepEqual(
+    restored.listAllTasks().map((task) => task.taskId),
+    ["failed-task"]
+  );
+});
+
+test("TaskService deleteTask rejects non-terminal tasks and leaves them untouched", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-delete-active");
+  setWorkspaceRoot(rootPath);
+
+  const storage = new TaskStorage(rootPath, 20);
+  await storage.initialize();
+  await storage.saveSnapshot(
+    makeSnapshot({
+      taskId: "interrupted-task",
+      state: "interrupted",
+      summary: "Task was interrupted and can be resumed.",
+    })
+  );
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () =>
+      new FakeProvider({
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      }),
+  });
+  await service.initialize();
+
+  await assert.rejects(
+    () => service.deleteTask("interrupted-task"),
+    /Only completed, failed, or cancelled tasks can be deleted/i
+  );
+  assert.equal(service.getTask("interrupted-task").state, "interrupted");
+  assert.ok(await storage.readSnapshot("interrupted-task"));
 });
 
 test("TaskService drives apply through waiting_decision -> waiting_approval -> completed", async () => {
@@ -393,6 +625,96 @@ test("TaskService marks completed tasks as degraded when runtime fallback warnin
   assert.equal(completed.runtimeSignals[0].severity, "degraded");
 });
 
+test("TaskService falls back to bounded local read-only planning when provider-backed repo analysis stalls", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-readonly-fallback-plan");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_TRANSPORT_FALLBACK",
+          severity: "degraded",
+          summary: "Provider transport fell back to a slower or narrower runtime path.",
+          detail: "Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)",
+        },
+        "Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)"
+      );
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalizationPath: "timeout",
+        stdoutEventTail: ["thread.started", "turn.started"],
+      });
+      throw Object.assign(new Error("Codex turn did not complete within 240s after turn start."), {
+        code: "PROVIDER_TURN_STALLED",
+      });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({
+    prompt:
+      "Analyze the current workspace and return a structured report with repository purpose, top-level module breakdown, likely entry points, task pipeline locations, and a recommended file-reading order for debugging the VS Code task pipeline. Do not modify files.",
+    mode: "plan",
+  });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision", 5_000);
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.equal(waiting.errorCode, null);
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_TRANSPORT_FALLBACK"));
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+  assert.ok((waiting.decision?.options.length ?? 0) >= 2);
+  assert.match(waiting.resultSummary ?? "", /bounded local read-only plan|受限的只读计划/i);
+  assert.match(waiting.lastOutput ?? "", /Task Pipeline Locations|任务链路位置/i);
+});
+
+test("TaskService reclassifies generic stalled provider failures as transport failures when transport warnings were recorded", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-transport-reclassify");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_TRANSPORT_FALLBACK",
+          severity: "degraded",
+          summary: "Provider transport fell back to a slower or narrower runtime path.",
+          detail: "Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)",
+        },
+        "Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)"
+      );
+      throw Object.assign(new Error("Codex turn did not complete within 240s after turn start."), {
+        code: "PROVIDER_TURN_STALLED",
+      });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Plan how to fix the failing README workflow.", mode: "apply" });
+  const failed = await waitForTaskState(service, queued.taskId, "failed", 5_000);
+
+  assert.equal(failed.errorCode, "PROVIDER_TRANSPORT_FAILED");
+  assert.match(failed.error ?? "", /downstream service|compatibility/i);
+});
+
 test("TaskService preserves fatal runtime signals when the provider fails", async () => {
   const rootPath = await makeTempDir("clawdrive-task-runtime-fatal");
   setWorkspaceRoot(rootPath);
@@ -472,6 +794,20 @@ test("TaskService shows degraded running health when the provider emits a stall 
   assert.equal(cancelled.executionHealth, "degraded");
 });
 
+test("TaskStorage keeps interrupted tasks resumable while pruning terminal history", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-storage-prune");
+  setWorkspaceRoot(rootPath);
+
+  const storage = new TaskStorage(rootPath, 1);
+  await storage.initialize();
+  await storage.saveSnapshot(makeSnapshot({ taskId: "completed-task", state: "completed", updatedAt: "2026-03-21T12:00:00.000Z" }));
+  await storage.saveSnapshot(makeSnapshot({ taskId: "interrupted-task", state: "interrupted", updatedAt: "2026-03-21T12:01:00.000Z" }));
+  await storage.saveSnapshot(makeSnapshot({ taskId: "failed-task", state: "failed", updatedAt: "2026-03-21T12:02:00.000Z" }));
+
+  const taskIds = (await storage.listSnapshots()).map((snapshot) => snapshot.taskId);
+  assert.deepEqual(taskIds, ["failed-task", "interrupted-task"]);
+});
+
 async function waitForTaskState(
   service: TaskService,
   taskId: string,
@@ -536,4 +872,67 @@ function makeSnapshot(overrides: Partial<TaskSnapshot>): TaskSnapshot {
     executionHealth: overrides.executionHealth ?? base.executionHealth,
     runtimeSignals: overrides.runtimeSignals ?? base.runtimeSignals,
   };
+}
+
+async function seedReadonlyFallbackWorkspace(rootPath: string): Promise<void> {
+  await fs.mkdir(`${rootPath}\\src\\commands`, { recursive: true });
+  await fs.mkdir(`${rootPath}\\src\\routing`, { recursive: true });
+  await fs.mkdir(`${rootPath}\\src\\tasks`, { recursive: true });
+  await fs.writeFile(
+    `${rootPath}\\package.json`,
+    JSON.stringify(
+      {
+        name: "clawdrive-vscode",
+        displayName: "ClawDrive for VS Code",
+        version: "0.1.39",
+        main: "./out/extension.js",
+        activationEvents: ["onStartupFinished"],
+        contributes: {
+          commands: [{ command: "clawdrive.dashboard" }, { command: "vscode.agent.route" }],
+        },
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  await fs.writeFile(
+    `${rootPath}\\src\\extension.ts`,
+    [
+      'import * as vscode from "vscode";',
+      'import { initializeCommandRegistry } from "./commands/registry";',
+      'import { TaskService } from "./tasks/service";',
+      'export async function activate() {',
+      "  const service = new TaskService({} as vscode.ExtensionContext);",
+      "  initializeCommandRegistry({ taskService: service, routeHandler: async () => ({ kind: 'task', route: 'analyze' }) });",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  await fs.writeFile(
+    `${rootPath}\\src\\commands\\registry.ts`,
+    'export function initializeCommandRegistry() { return "vscode.agent.route"; }\n',
+    "utf8"
+  );
+  await fs.writeFile(
+    `${rootPath}\\src\\routing\\service.ts`,
+    'export class AgentRouteService { async routeTask() { return "route"; } }\n',
+    "utf8"
+  );
+  await fs.writeFile(
+    `${rootPath}\\src\\tasks\\service.ts`,
+    'export class TaskService { async startTask() { return "task"; } }\n',
+    "utf8"
+  );
+  await fs.writeFile(
+    `${rootPath}\\src\\tasks\\provider.ts`,
+    'export interface TaskProvider { startTask(): Promise<void>; resumeTask(): Promise<void>; }\n',
+    "utf8"
+  );
+  await fs.writeFile(
+    `${rootPath}\\src\\tasks\\codex-provider.ts`,
+    'export class CodexCliProvider { async startTask() { return "provider"; } async resumeTask() { return "provider"; } }\n',
+    "utf8"
+  );
 }

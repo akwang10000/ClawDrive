@@ -38,11 +38,14 @@ The current repository includes:
 - `ClawDrive Activity`
 - `ClawDrive` output log
 
-The dashboard intentionally keeps only the most necessary actions:
+The dashboard now keeps the main operator loop in one place:
 
 - connect or reconnect
 - open settings
 - run diagnosis
+- observe recent tracked tasks and their current state
+- cancel active or resumable tasks
+- delete terminal tasks from local history
 
 ## Recommended Setup Flow
 
@@ -50,8 +53,10 @@ The dashboard intentionally keeps only the most necessary actions:
 2. Configure Gateway host, port, token, and TLS.
 3. Expect auto-connect to be off by default for new installs.
 4. Configure provider settings if you want long tasks or route-backed analysis/planning/apply.
-5. Save settings, then connect manually unless you explicitly re-enable auto-connect.
+5. Use `Save and Connect` to apply the settings and connect immediately. The auto-connect toggle only affects later startup.
 6. Use `Dashboard`, `Activity`, or `Diagnose Connection` when you need verification or recovery.
+
+Dashboard task management is local UI only. It does not add any new remote `vscode.agent.task.*` allowlist requirements.
 
 ## Current Activation Policy
 
@@ -65,7 +70,7 @@ This means:
 
 - the extension is expected to be loaded once VS Code startup settles
 - command and view availability do not depend on a second lazy activation path
-- connection is still a separate decision, especially now that auto-connect defaults to off
+- startup connection is still a separate decision, especially now that auto-connect defaults to off
 
 If the Gateway uses `gateway.nodes.allowCommands`, keep the allowlist aligned with the extension command surface.
 
@@ -200,6 +205,14 @@ Recent hardening also keeps provider execution more isolated by:
 
 That isolation is intended to reduce downstream transport issues caused by unrelated personal Codex setup.
 
+If you need broader read-only probing, set `clawdrive.provider.policyLevel` to `extended`. This switches
+the provider runtime to a derived task `CODEX_HOME` seeded from your source home, preserving auth and
+model-provider config while stripping task-unsafe feature and MCP server sections before execution.
+
+If you need to expand or restrict shell execution, set `clawdrive.provider.sandboxMode` to
+`read-only`, `workspace-write`, or `danger-full-access`. This directly maps to the Codex CLI sandbox
+policy for provider-backed exec runs.
+
 ## Warning Reality
 
 Provider execution may still emit helper, sandbox, or transport-layer warnings.
@@ -221,8 +234,8 @@ In practice, operator-facing output should now distinguish:
 
 The currently verified operator flow is:
 
-1. Save Gateway and provider settings.
-2. Let the extension auto-connect, or connect manually.
+1. Save Gateway and provider settings with `Save and Connect`, or connect manually from the dashboard.
+2. Confirm the extension is connected.
 3. Confirm `connected`, `callable`, and `provider ready`.
 4. Trigger a direct read command such as `vscode.workspace.info`.
 5. Trigger a routed request such as `vscode.agent.route`.

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 out/
+out-test/
+selftest-report.json
 *.vsix
 *.log
 .DS_Store

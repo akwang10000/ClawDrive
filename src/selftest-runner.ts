@@ -98,7 +98,10 @@ async function runCases(routeService: AgentRouteService, taskService: TaskServic
           (route.kind === "task" ? route.data?.taskId : route.data?.snapshot?.taskId) ?? null;
         if (taskId) {
           caseResult.taskId = taskId;
-          const snapshot = await waitForTask(taskService, taskId);
+          let snapshot = await waitForTask(taskService, taskId);
+          if (snapshot) {
+            snapshot = await resolvePendingTask(taskService, snapshot);
+          }
           caseResult.snapshot = snapshot;
           if (snapshot) {
             caseResult.result = await taskService.getTaskResult(taskId);
@@ -123,6 +126,34 @@ async function waitForTask(taskService: TaskService, taskId: string): Promise<Ta
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
   return null;
+}
+
+async function resolvePendingTask(taskService: TaskService, snapshot: TaskSnapshot): Promise<TaskSnapshot> {
+  let current = snapshot;
+  const maxSteps = 2;
+  for (let step = 0; step < maxSteps; step += 1) {
+    if (current.state === "waiting_decision") {
+      const optionId =
+        current.decision?.recommendedOptionId ?? current.decision?.options?.[0]?.id ?? undefined;
+      current = await taskService.respondToTask({
+        taskId: current.taskId,
+        optionId,
+        message: optionId ? undefined : "continue",
+      });
+      current = (await waitForTask(taskService, current.taskId)) ?? current;
+      continue;
+    }
+    if (current.state === "waiting_approval") {
+      current = await taskService.respondToTask({
+        taskId: current.taskId,
+        approval: "approved",
+      });
+      current = (await waitForTask(taskService, current.taskId)) ?? current;
+      continue;
+    }
+    break;
+  }
+  return current;
 }
 
 function getWorkspaceRoot(): string | null {

@@ -54,6 +54,7 @@ Before considering a task complete:
 Typical verification examples:
 
 - `npm run compile`
+- `npm test` so runtime `out/` and test output stay in sync
 - targeted tests once they exist
 - extension host launch for bootstrap and UX checks
 
@@ -95,7 +96,8 @@ Before stopping after a completed task:
 
 1. review the changed files
 2. run relevant verification
-3. update docs if behavior or workflow changed
-4. prepare the repository for commit and push
+3. make sure the runnable `out/` build is refreshed before handing off or packaging
+4. update docs if behavior or workflow changed
+5. prepare the repository for commit and push
 
 If push is blocked by authentication, permissions, or network state, record the blocker clearly.

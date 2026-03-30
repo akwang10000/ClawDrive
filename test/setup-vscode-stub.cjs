@@ -1,5 +1,6 @@
 const Module = require("module");
 const path = require("path");
+const fs = require("fs/promises");
 
 const configuration = new Map();
 const outputLines = [];
@@ -97,9 +98,17 @@ const vscodeStub = {
         },
       };
     },
+    async openTextDocument(uri) {
+      const content = await fs.readFile(uri.fsPath, "utf8");
+      return {
+        getText() {
+          return content;
+        },
+        languageId: languageIdForPath(uri.fsPath),
+      };
+    },
     fs: {
       async stat(uri) {
-        const fs = require("fs/promises");
         const result = await fs.stat(uri.fsPath);
         return {
           type: result.isDirectory() ? 2 : 1,
@@ -107,6 +116,13 @@ const vscodeStub = {
           mtime: result.mtimeMs,
           size: result.size,
         };
+      },
+      async readDirectory(uri) {
+        const entries = await fs.readdir(uri.fsPath, { withFileTypes: true });
+        return entries.map((entry) => [
+          entry.name,
+          entry.isDirectory() ? 2 : entry.isFile() ? 1 : 0,
+        ]);
       },
     },
   },
@@ -148,3 +164,23 @@ Module._load = function patchedLoad(request, parent, isMain) {
   }
   return originalLoad.call(this, request, parent, isMain);
 };
+
+function languageIdForPath(fsPath) {
+  const extension = path.extname(fsPath).toLowerCase();
+  switch (extension) {
+    case ".ts":
+      return "typescript";
+    case ".tsx":
+      return "typescriptreact";
+    case ".js":
+      return "javascript";
+    case ".jsx":
+      return "javascriptreact";
+    case ".json":
+      return "json";
+    case ".md":
+      return "markdown";
+    default:
+      return "plaintext";
+  }
+}

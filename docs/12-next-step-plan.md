@@ -13,205 +13,177 @@ It should answer:
 
 ## Current State
 
-The current mainline is working in this shape:
+The previous milestone, grounded repository inspect expansion, is now effectively implemented:
 
 - `vscode.agent.route` is the natural-language entrypoint
-- grounded inspect covers explicit files, selected directories, and extension-wiring checks
+- grounded inspect covers explicit files, selected directories, shallow repository structure, extension wiring, runtime-flow audit, and bounded search-lite
 - long-running work uses `analyze`, `plan`, `apply`, `continue`, and `diagnose`
 - `apply` uses explicit approval before local structured mutation
 - diagnostics distinguish connection, callable state, provider readiness, task state, and runtime health
 
 This is enough for repeatable demos and focused operator testing.
 
-It is not yet enough for strong repository-scale understanding without careful prompting.
+The main remaining risk is not missing surface area.
+It is correctness drift at the route and task-contract boundary.
 
 ## Next Milestone
 
 Milestone name:
 
-- Grounded Repository Inspect Expansion
+- Routing And Task Contract Hardening
 
 Milestone goal:
 
-- make repository-understanding prompts rely less on provider shell probing and more on deterministic local inspection before escalating to `analyze`
+- make route selection and task lifecycle behavior more predictable for real operator use before widening product scope again
 
 ## Product Reason
 
 This is the highest-leverage next step because:
 
-- it strengthens the most reliable part of the current product
-- it directly addresses the earlier "answers are directionally right but not grounded enough" problem
-- it reduces unnecessary provider friction for common audit and explanation requests
-- it improves both user experience and debugging confidence
+- the current product bar is now limited more by edge-case correctness than by missing happy-path capability
+- route mistakes and task-state mismatches erode trust faster than narrow feature gaps
+- this keeps the grounded inspect slice reliable before any broader apply or provider expansion
+- it gives operators a cleaner contract for cancellation, recovery, and diagnosis
 
 ## Boundary Reminder
 
-This milestone is intentionally a plugin-layer expansion, not a provider replacement.
+This milestone is still a hardening pass on the existing mainline, not a scope expansion.
 
-What should move into ClawDrive:
+Keep inside ClawDrive:
 
-- deterministic local evidence gathering
-- bounded shallow inspection
-- route decisions about when local grounding is enough
+- deterministic route selection
+- deterministic task persistence and recovery semantics
+- operator-facing status consistency
 
-What should stay in the provider:
+Do not expand into:
 
-- broad reasoning
-- synthesis across ambiguous evidence
-- planning and proposal generation
-- open-ended repository understanding after local grounding is exhausted
-
-The goal is to make the provider start from better evidence, not to make the plugin impersonate the provider.
+- broader write surfaces
+- new public command families
+- provider parity work
+- repository-scale autonomous reasoning beyond the grounded inspect ceiling
 
 ## Scope
 
-### 1. Directory Follow-Through
+### 1. Diagnose Route Precision
 
-Add one more shallow layer after the current directory summary.
-
-Target behavior:
-
-- a directory summary can nominate one or two relevant child directories
-- the router can inspect one more level before escalating to provider analysis
-- this remains deterministic and bounded, not an open-ended crawl
-
-Examples:
-
-- "Look at `src` and explain the main modules."
-- "Summarize the repository structure."
-
-### 2. Grounded Repository Audit Templates
-
-Add deterministic inspect paths for high-frequency repository questions.
-
-Target prompts:
-
-- summarize project layout
-- explain the main runtime entry flow
-- compare declared surface versus implementation hints
-- explain how route, task service, and provider fit together
-
-Behavior rule:
-
-- prefer local reads and shallow directory inspection first
-- escalate to `analyze` only when the request still needs iterative reasoning
-
-### 3. Conservative Search-Lite Support
-
-Add a narrow local helper to support grounded inspect.
-
-Allowed scope:
-
-- likely file lookup by name
-- exact text lookup for known tokens such as command ids, entrypoints, or exported symbols
-
-Not allowed scope:
-
-- unrestricted shell search
-- arbitrary regex exploration as a public behavior
-
-Contract rule:
-
-- this remains an internal route-time helper only
-- it does not introduce a new public command surface
-- it does not change the product non-goal against general-purpose text or file search commands
-
-### 4. Route Escalation Tightening
-
-Refine route rules so the system is clearer about when local grounding is enough.
+Tighten diagnose routing so it only matches explicit debugging intent.
 
 Target behavior:
 
-- explicit file and directory requests stay local
-- shallow repository audit requests start local
-- provider-backed `analyze` starts only after local evidence is insufficient or the question is clearly broader than local summarization
+- provider architecture questions should stay in inspect or analyze
+- generic mentions of `provider` should not force a diagnose route
+- diagnose remains the path for status, readiness, connection, and failure-debugging prompts
+
+### 2. Active Cancellation Settlement
+
+Make task cancellation return a settled task snapshot instead of a stale in-flight snapshot.
+
+Target behavior:
+
+- cancelling a running task should return after the post-abort state is visible
+- the common result should be `cancelled`
+- command callers should not see `running` after a successful cancel request
+
+### 3. Interrupted Task Retention
+
+Keep interrupted tasks resumable even when terminal history is pruned.
+
+Target behavior:
+
+- `interrupted` remains a recovery state, not terminal history
+- history pruning should apply to completed/failed/cancelled tasks
+- restart recovery should not create resumable tasks that are then immediately pruned away
+
+### 4. Grounded Inspect Refinement
+
+Continue small precision fixes around the grounded inspect mainline.
+
+Target behavior:
+
+- route rules stay explainable
+- grounded inspect keeps winning the shallow cases it already owns
+- fixes should prefer bounded local evidence over broader provider escalation
 
 ## Work Packages
 
 Implementation should be split into these work packages:
 
-1. Classifier and routing expansion
+1. Route classifier hardening
 
-- add new deterministic patterns for repository-layout and entry-flow prompts
-- keep route behavior explainable and testable
+- remove broad false-positive diagnose matches
+- add regression tests for architecture-style prompts
 
-2. Grounded inspect helpers
+2. Task service consistency
 
-- add shallow repository-summary helpers
-- add search-lite helpers used only by grounded inspect
+- wait for active cancel settlement
+- keep resumable interrupted tasks out of terminal-history pruning
 
-3. Response shaping
-
-- keep responses short and human-readable
-- make it obvious when the answer is grounded in local files versus escalated analysis
-
-4. Documentation and validation
+3. Documentation alignment
 
 - update routing docs
-- update natural-language calling docs
-- update validation goals when new grounded-inspect coverage is real
+- update task semantics docs
+- record settled repo-level decisions in `AGENTS.md`
+
+4. Validation
+
+- add automated checks for route precision, cancel settlement, and interrupted retention
+- keep the full test suite green
 
 ## Sequence
 
 Recommended implementation order:
 
-1. search-lite helper
-2. shallow repository-summary helper
-3. route classification and escalation rules
-4. response shaping
-5. tests
-6. documentation updates
+1. classifier hardening
+2. task cancellation settlement
+3. interrupted retention change
+4. regression tests
+5. documentation updates
 
 ## Explicitly Not In Scope
 
 Do not expand into these areas in this milestone:
 
-- new public command families
-- git/test/debug/terminal workflows
 - broader `apply` operation types
+- git/test/debug/terminal workflows
 - multi-root workspace support
 - provider parity beyond Codex
-- full repository indexing
-- broad language-intelligence surfaces such as references or symbol graphs
+- new repository indexing or language-intelligence features
 
 Also avoid these failure modes:
 
-- turning search-lite into an unrestricted search surface
-- recursively inspecting the whole repository by default
-- moving provider-style reasoning rules into the plugin
-- adding route branches that are too heuristic to debug predictably
-- letting internal search-lite semantics become an implied public feature contract
+- overfitting route rules to one prompt wording
+- treating resumable states as disposable terminal history
+- returning command snapshots before lifecycle transitions actually settle
+- using hardening work as an excuse to widen command surface
 
 ## Acceptance
 
 This milestone is successful when:
 
-- prompts like "summarize this repository structure" can return a more grounded answer than a generic checklist
-- prompts like "look at src and explain the main modules" prefer local inspection before provider analysis
-- prompts like "where is `vscode.agent.route` wired up" can find likely files through bounded local search support
-- route decisions remain predictable and debuggable
-- the response still stays short and human-readable
+- prompts like "Explain the provider contract in this repo" no longer route to diagnose
+- cancelling a running task returns a settled snapshot instead of `running`
+- interrupted tasks remain available for `continue` even when terminal history is pruned
+- route and task behavior remain predictable and debuggable
 
 ## Validation Checklist
 
 Automated checks should cover:
 
-- direct routed summaries still work for explicit file prompts
-- directory summaries can inspect one more relevant level without becoming broad scans
-- search-lite can find likely files by exact token or filename
-- provider-backed `analyze` still works when local grounding is not enough
-- route classification prefers grounded inspect for shallow repository audit prompts
+- generic provider-architecture prompts route to analyze instead of diagnose
+- active cancellation returns a `cancelled` snapshot
+- interrupted task snapshots survive pruning while terminal history is trimmed
+- existing grounded inspect and provider-backed task tests still pass
 
 Operator checks should cover:
 
-- OpenClaw can ask for repository structure in ordinary language
-- the returned answer is based on local evidence first
-- failure mode remains understandable when grounded inspect is insufficient and provider analysis takes over
+- a cancelled task reads as cancelled immediately in normal command results
+- restart recovery still leaves interrupted tasks resumable
+- diagnosis remains focused on status and failure debugging rather than stealing normal architecture questions
 
 ## After This Milestone
 
 After this milestone, the next likely branch is one of:
 
-- richer repository-aware inspect and explanation
-- broader operator UX cleanup such as dashboard simplification and clearer state refresh
-- wider apply capability after the inspect foundation is strong enough
+- broader operator UX cleanup and state visibility
+- more grounded inspect refinements at repository scale
+- wider apply capability once the task contract is stable enough

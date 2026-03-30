@@ -17,6 +17,7 @@ English version:
 - 任务快照与事件持久化
 - `waiting_decision` / `waiting_approval` / `interrupted` 恢复与继续
 - VS Code `ClawDrive Activity` 任务视图
+- `ClawDrive: Dashboard` 控制台，可查看最近任务并执行本地取消/删除
 - `apply` 薄切片：结构化修改 + 显式批准 + 本地受控落盘
 
 当前已经跑通的端到端链路：
@@ -97,10 +98,10 @@ English version:
 推荐操作路径：
 
 1. 打开 `ClawDrive: Settings`
-2. 配置 Gateway host / port / token 和 provider 相关设置
-3. 保持 auto-connect 开启，除非你明确需要手动连接
-4. 保存设置后等待扩展自动连接
-5. 如需排障，再打开 `ClawDrive: Dashboard`、`ClawDrive Activity` 或 `ClawDrive` 输出
+2. 配置 Gateway host / port / token 和 provider 相关设置（必要时调整 `clawdrive.provider.sandboxMode`）
+3. 默认 auto-connect 是关闭的，除非你明确要启用它
+4. 点击“保存并连接”会立即应用设置并连接；上面的 auto-connect 开关只影响后续启动时是否自动连接
+5. 需要查看连接状态、最近任务或快速取消/删除时，打开 `ClawDrive: Dashboard`；需要更细的任务结果与事件时，再看 `ClawDrive Activity` 或 `ClawDrive` 输出
 
 如果 Gateway 使用 `gateway.nodes.allowCommands`，升级后仍需同步放行新增命令。
 当前至少应允许：
@@ -117,6 +118,8 @@ English version:
 - `vscode.agent.task.respond`
 - `vscode.agent.task.cancel`
 - `vscode.agent.task.result`
+
+Dashboard 中的任务管理是扩展本地 UI 能力，不会新增远程 `vscode.agent.task.*` 命令。
 
 当前 provider 运行还可能出现 helper、sandbox 或 transport 层告警。
 现阶段的目标是：

@@ -7,6 +7,7 @@ import { isCommandFailure, mapUnknownCommandError } from "../guards/errors";
 import { runWithCommandTimeout } from "../guards/timeout";
 import type { AgentRouteRequest, AgentRouteResponse } from "../routing/types";
 import type { TaskService } from "../tasks/service";
+import type { TaskMode } from "../tasks/types";
 import { workspaceInfo } from "./workspace";
 
 type CommandHandler = (params: unknown) => Promise<unknown>;
@@ -179,19 +180,39 @@ function requireRouteHandler(): (params: AgentRouteRequest) => Promise<AgentRout
   return routeHandler;
 }
 
-function parseTaskStartParams(params: unknown): { prompt: string; mode: "analyze" | "plan" | "apply"; paths?: string[] } {
+const taskStartModeAliases: Record<string, TaskMode> = {
+  analyze: "analyze",
+  analyse: "analyze",
+  analysis: "analyze",
+  ask: "analyze",
+  chat: "analyze",
+  plan: "plan",
+  apply: "apply",
+  edit: "apply",
+};
+
+function normalizeTaskStartMode(value: unknown): TaskMode | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return taskStartModeAliases[value.trim().toLowerCase()] ?? null;
+}
+
+function parseTaskStartParams(params: unknown): { prompt: string; mode: TaskMode; paths?: string[] } {
   if (!params || typeof params !== "object") {
     throw mapUnknownCommandError(new Error("Expected an object with prompt and mode."));
   }
   const value = params as Record<string, unknown>;
   const prompt = typeof value.prompt === "string" ? value.prompt.trim() : "";
-  const mode = value.mode;
+  const mode = normalizeTaskStartMode(value.mode);
   const rawPaths = Array.isArray(value.paths) ? value.paths.filter((item): item is string => typeof item === "string") : undefined;
   if (!prompt) {
     throw mapUnknownCommandError(new Error("prompt must be a non-empty string."));
   }
-  if (mode !== "analyze" && mode !== "plan" && mode !== "apply") {
-    throw mapUnknownCommandError(new Error("mode must be analyze, plan, or apply."));
+  if (!mode) {
+    throw mapUnknownCommandError(
+      new Error("mode must be analyze, plan, or apply. Accepted aliases: ask/chat/analysis/analyse -> analyze, edit -> apply.")
+    );
   }
   return { prompt, mode, paths: rawPaths };
 }

@@ -12,6 +12,9 @@ interface SettingsData {
   providerEnabled: boolean;
   providerCodexPath: string;
   providerCodexModel: string;
+  providerPolicyLevel: "safe" | "extended" | "raw";
+  providerDisableFeatures: string[];
+  providerSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
   tasksDefaultTimeoutMs: number;
   tasksHistoryLimit: number;
   locale: string;
@@ -38,6 +41,9 @@ export function showSettingsPanel(handlers: SettingsPanelHandlers): void {
         providerEnabled: cfg.providerEnabled,
         providerCodexPath: cfg.providerCodexPath,
         providerCodexModel: cfg.providerCodexModel,
+        providerPolicyLevel: cfg.providerPolicyLevel,
+        providerDisableFeatures: cfg.providerDisableFeatures,
+        providerSandboxMode: cfg.providerSandboxMode,
         tasksDefaultTimeoutMs: cfg.tasksDefaultTimeoutMs,
         tasksHistoryLimit: cfg.tasksHistoryLimit,
         locale: getCurrentLocale(),
@@ -100,6 +106,10 @@ function parseSettingsInput(value: unknown): SettingsData {
   const displayName = typeof data.displayName === "string" ? data.displayName.trim() : "";
   const providerCodexPath = typeof data.providerCodexPath === "string" ? data.providerCodexPath.trim() : "";
   const providerCodexModel = typeof data.providerCodexModel === "string" ? data.providerCodexModel.trim() : "";
+  const providerPolicyLevelRaw = typeof data.providerPolicyLevel === "string" ? data.providerPolicyLevel.trim() : "";
+  const providerDisableFeaturesRaw =
+    typeof data.providerDisableFeatures === "string" ? data.providerDisableFeatures : "";
+  const providerSandboxModeRaw = typeof data.providerSandboxMode === "string" ? data.providerSandboxMode.trim() : "";
   const gatewayPortRaw =
     typeof data.gatewayPort === "string" || typeof data.gatewayPort === "number"
       ? Number(data.gatewayPort)
@@ -139,6 +149,16 @@ function parseSettingsInput(value: unknown): SettingsData {
     providerEnabled: Boolean(data.providerEnabled),
     providerCodexPath: providerCodexPath || "codex",
     providerCodexModel,
+    providerPolicyLevel:
+      providerPolicyLevelRaw === "extended" || providerPolicyLevelRaw === "raw" ? providerPolicyLevelRaw : "safe",
+    providerDisableFeatures: providerDisableFeaturesRaw
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    providerSandboxMode:
+      providerSandboxModeRaw === "workspace-write" || providerSandboxModeRaw === "danger-full-access"
+        ? providerSandboxModeRaw
+        : "read-only",
     tasksDefaultTimeoutMs: Math.trunc(tasksDefaultTimeoutRaw),
     tasksHistoryLimit: Math.trunc(tasksHistoryLimitRaw),
     locale: typeof data.locale === "string" ? data.locale : getCurrentLocale(),
@@ -156,6 +176,9 @@ async function applySettings(data: SettingsData): Promise<void> {
   await cfg.update("provider.enabled", data.providerEnabled, vscode.ConfigurationTarget.Global);
   await cfg.update("provider.codex.path", data.providerCodexPath, vscode.ConfigurationTarget.Global);
   await cfg.update("provider.codex.model", data.providerCodexModel, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.policyLevel", data.providerPolicyLevel, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.disableFeatures", data.providerDisableFeatures, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.sandboxMode", data.providerSandboxMode, vscode.ConfigurationTarget.Global);
   await cfg.update("tasks.defaultTimeoutMs", data.tasksDefaultTimeoutMs, vscode.ConfigurationTarget.Global);
   await cfg.update("tasks.historyLimit", data.tasksHistoryLimit, vscode.ConfigurationTarget.Global);
 }
@@ -249,7 +272,7 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
       margin-bottom: 6px;
       font-weight: 500;
     }
-    input[type="text"], input[type="number"], input[type="password"] {
+    input[type="text"], input[type="number"], input[type="password"], select {
       width: 100%;
       box-sizing: border-box;
       padding: 9px 10px;
@@ -369,6 +392,29 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
             <input id="providerCodexModel" type="text" value="${escapeHtml(data.providerCodexModel)}" placeholder="">
             <div class="hint" id="providerCodexModelHint"></div>
           </div>
+          <div class="field">
+            <label for="providerPolicyLevel" id="providerPolicyLevelLabel"></label>
+            <select id="providerPolicyLevel">
+              <option value="safe" ${data.providerPolicyLevel === "safe" ? "selected" : ""}>safe</option>
+              <option value="extended" ${data.providerPolicyLevel === "extended" ? "selected" : ""}>extended</option>
+              <option value="raw" ${data.providerPolicyLevel === "raw" ? "selected" : ""}>raw</option>
+            </select>
+            <div class="hint" id="providerPolicyLevelHint"></div>
+          </div>
+          <div class="field">
+            <label for="providerDisableFeatures" id="providerDisableFeaturesLabel"></label>
+            <input id="providerDisableFeatures" type="text" value="${escapeHtml(data.providerDisableFeatures.join(", "))}" placeholder="multi_agent, plugins, apps, shell_snapshot">
+            <div class="hint" id="providerDisableFeaturesHint"></div>
+          </div>
+          <div class="field">
+            <label for="providerSandboxMode" id="providerSandboxModeLabel"></label>
+            <select id="providerSandboxMode">
+              <option value="read-only" ${data.providerSandboxMode === "read-only" ? "selected" : ""}>read-only</option>
+              <option value="workspace-write" ${data.providerSandboxMode === "workspace-write" ? "selected" : ""}>workspace-write</option>
+              <option value="danger-full-access" ${data.providerSandboxMode === "danger-full-access" ? "selected" : ""}>danger-full-access</option>
+            </select>
+            <div class="hint" id="providerSandboxModeHint"></div>
+          </div>
           <div class="row">
             <input id="providerEnabled" type="checkbox" ${data.providerEnabled ? "checked" : ""}>
             <label for="providerEnabled" id="providerEnabledLabel"></label>
@@ -426,6 +472,21 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
       providerCodexPathHint: { "zh-CN": "\\u53ef\\u4ee5\\u5199 codex\\uff0c\\u4e5f\\u53ef\\u4ee5\\u586b\\u7edd\\u5bf9\\u8def\\u5f84\\u3002", "en": "Use codex or an absolute executable path." },
       providerCodexModelLabel: { "zh-CN": "Codex \\u6a21\\u578b\\uff08\\u53ef\\u9009\\uff09", "en": "Codex Model (Optional)" },
       providerCodexModelHint: { "zh-CN": "\\u7559\\u7a7a\\u65f6\\u4f7f\\u7528 Codex CLI \\u9ed8\\u8ba4\\u6a21\\u578b\\u3002", "en": "Leave empty to use the Codex CLI default model." },
+      providerPolicyLevelLabel: { "zh-CN": "Provider \\u7b56\\u7565\\u5c42\\u7ea7", "en": "Provider Policy Level" },
+      providerPolicyLevelHint: {
+        "zh-CN": "\\u9ed8\\u8ba4 safe \\u4f7f\\u7528\\u9694\\u79bb CODEX_HOME\\uff0cextended \\u4f1a\\u4ece\\u4f60\\u7684\\u672c\\u5730 Codex home \\u6d3e\\u751f task CODEX_HOME\\u5e76\\u5bf9\u914d\u7f6e\\u505a\\u5b89\\u5168\\u5254\\u79bb\\uff0craw \\u5219\\u76f4\\u63a5\\u7ee7\\u627f\\u539f\\u59cb CODEX_HOME\\uff08\\u98ce\\u9669\\u6700\\u9ad8\\uff09\\u3002",
+        "en": "safe uses isolated CODEX_HOME. extended derives and sanitizes a task CODEX_HOME. raw reuses your source CODEX_HOME directly and is the highest-risk mode."
+      },
+      providerDisableFeaturesLabel: { "zh-CN": "\\u5f3a\\u5236\\u5173\\u95ed\\u7684 Codex features", "en": "Forced-off Codex Features" },
+      providerDisableFeaturesHint: {
+        "zh-CN": "\\u7528\\u82f1\\u6587\\u9017\\u53f7\\u5206\\u9694 feature \\u540d\\u79f0\\u3002\\u7559\\u7a7a\\u8868\\u793a\\u4e0d\\u989d\\u5916\\u5173\\u95ed task \\u542f\\u52a8 feature\\u3002",
+        "en": "Comma-separated feature names. Leave empty to avoid forcing any task startup features off."
+      },
+      providerSandboxModeLabel: { "zh-CN": "Provider \\u547d\\u4ee4\\u6743\\u9650", "en": "Provider Sandbox Mode" },
+      providerSandboxModeHint: {
+        "zh-CN": "\\u9ed8\\u8ba4 read-only\\uff0cworkspace-write \\u4e3a\\u5de5\\u4f5c\\u533a\\u5199\\u5165\\u6388\\u6743\\uff0cdanger-full-access \\u4e3a\\u6700\\u9ad8\\u6743\\u9650\\uff08\\u98ce\\u9669\\u6700\\u9ad8\\uff09\\u3002",
+        "en": "Default is read-only. workspace-write allows workspace writes. danger-full-access removes sandboxing (highest risk)."
+      },
       providerEnabledLabel: { "zh-CN": "\\u542f\\u7528 Codex CLI Provider", "en": "Enable Codex CLI Provider" },
       providerEnabledHint: { "zh-CN": "\\u9700\\u8981\\u4efb\\u52a1\\u547d\\u4ee4\\u65f6\\u6253\\u5f00\\u5b83\\u3002", "en": "Turn this on before using task commands." },
       tasksTitle: { "zh-CN": "\\u4efb\\u52a1\\u9ed8\\u8ba4\\u503c", "en": "Task Defaults" },
@@ -434,16 +495,16 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
       saveAndConnect: { "zh-CN": "\\u4fdd\\u5b58\\u5e76\\u8fde\\u63a5", "en": "Save and Connect" },
       notesTitle: { "zh-CN": "\\u4f7f\\u7528\\u8bf4\\u660e", "en": "Notes" },
       note1: {
-        "zh-CN": "\\u8fd9\\u4e2a\\u9875\\u9762\\u53ea\\u505a\\u914d\\u7f6e\\u3002\\u8fde\\u63a5\\u3001\\u72b6\\u6001\\u548c\\u8bca\\u65ad\\u56de\\u5230\\u63a7\\u5236\\u53f0\\u770b\\u3002",
-        "en": "This page is now only for configuration. Connection, status, and diagnosis stay in the dashboard."
+        "zh-CN": "\\u8fd9\\u4e2a\\u9875\\u9762\\u7528\\u6765\\u914d\\u7f6e\\u5e76\\u5b8c\\u6210\\u9996\\u6b21\\u8fde\\u63a5\\u3002\\u8fde\\u63a5\\u72b6\\u6001\\u548c\\u8bca\\u65ad\\u4ecd\\u7136\\u56de\\u5230 dashboard \\u67e5\\u770b\\u3002",
+        "en": "Use this page for configuration and first-time connect. Ongoing status and diagnosis still live in the dashboard."
       },
       note2: {
         "zh-CN": "\\u5982\\u679c provider \\u62a5 ENOENT\\uff0c\\u8bf7\\u76f4\\u63a5\\u586b codex.exe \\u7684\\u7edd\\u5bf9\\u8def\\u5f84\\u3002",
         "en": "If the provider reports ENOENT, enter the absolute path to codex.exe."
       },
       note3: {
-        "zh-CN": "\\u4fdd\\u5b58\\u6210\\u529f\\u540e\\u4f1a\\u7acb\\u5373\\u8fde\\u63a5\\uff0c\\u540c\\u65f6\\u53ef\\u4ee5\\u901a\\u8fc7\\u4e0a\\u9762\\u7684\\u5f00\\u5173\\u8bbe\\u7f6e\\u662f\\u5426\\u5728\\u4e0b\\u6b21\\u542f\\u52a8\\u65f6\\u81ea\\u52a8\\u8fde\\u63a5\\u3002",
-        "en": "After saving, the extension connects immediately. The switch above controls whether startup also auto-connects."
+        "zh-CN": "\\u70b9\\u51fb\\u201c\\u4fdd\\u5b58\\u5e76\\u8fde\\u63a5\\u201d\\u540e\\u4f1a\\u7acb\\u5373\\u8fde\\u63a5\\uff0c\\u4e0a\\u9762\\u7684 auto-connect \\u5f00\\u5173\\u53ea\\u63a7\\u5236\\u4e0b\\u6b21\\u542f\\u52a8\\u6216\\u91cd\\u8f7d\\u65f6\\u662f\\u5426\\u81ea\\u52a8\\u8fde\\u63a5\\u3002",
+        "en": "Click Save and Connect to connect immediately. The auto-connect switch above only controls whether startup or reload also connects automatically."
       },
       unknownError: { "zh-CN": "\\u672a\\u77e5\\u9519\\u8bef", "en": "Unknown error" }
     };
@@ -476,6 +537,9 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
         providerEnabled: document.getElementById("providerEnabled").checked,
         providerCodexPath: document.getElementById("providerCodexPath").value,
         providerCodexModel: document.getElementById("providerCodexModel").value,
+        providerPolicyLevel: document.getElementById("providerPolicyLevel").value,
+        providerDisableFeatures: document.getElementById("providerDisableFeatures").value,
+        providerSandboxMode: document.getElementById("providerSandboxMode").value,
         tasksDefaultTimeoutMs: document.getElementById("tasksDefaultTimeoutMs").value,
         tasksHistoryLimit: document.getElementById("tasksHistoryLimit").value,
         locale: state.locale,

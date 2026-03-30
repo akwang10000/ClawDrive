@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { ClawDriveActivityProvider } from "./activity-view";
 import { getConfig } from "./config";
 import { dispatchCommand, getRegisteredCommands, initializeCommandRegistry } from "./commands/registry";
+import { buildDashboardTaskSnapshot } from "./dashboard-tasks";
 import { collectOperatorStatus, runConnectionDiagnosis, isCallableWithLocalConfig } from "./diagnostics";
 import { refreshDashboardPanel, showDashboardPanel } from "./dashboard-panel";
 import { GatewayClient, type ConnectionState } from "./gateway-client";
@@ -157,6 +158,10 @@ class ClawDriveRuntime {
     await this.taskService.cancelTask(taskId);
   }
 
+  async deleteTask(taskId: string): Promise<void> {
+    await this.taskService.deleteTask(taskId);
+  }
+
   async approveTask(taskId: string): Promise<void> {
     await this.activityProvider.approveTask(taskId);
   }
@@ -175,6 +180,7 @@ class ClawDriveRuntime {
 
   getDashboardSnapshot() {
     const cfg = getConfig();
+    const taskSnapshot = buildDashboardTaskSnapshot(this.taskService.listAllTasks(), 20);
     return {
       locale: getCurrentLocale(),
       connectionState: this.connectionState,
@@ -184,6 +190,8 @@ class ClawDriveRuntime {
       callable: isCallableWithLocalConfig(),
       providerStatus: this.providerStatusLabel(),
       commands: getRegisteredCommands(),
+      taskCounts: taskSnapshot.taskCounts,
+      tasks: taskSnapshot.tasks,
     };
   }
 
@@ -216,6 +224,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         onDiagnose: async () => {
           await runtime.diagnose();
+        },
+        onCancelTask: async (taskId: string) => {
+          await runtime.cancelTask(taskId);
+        },
+        onDeleteTask: async (taskId: string) => {
+          await runtime.deleteTask(taskId);
         },
       });
     }),

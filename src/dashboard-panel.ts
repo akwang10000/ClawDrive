@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { getCurrentLocale, t } from "./i18n";
+import type { DashboardTaskCounts, DashboardTaskItem } from "./dashboard-tasks";
 
 export interface DashboardSnapshot {
   locale: string;
@@ -10,6 +11,8 @@ export interface DashboardSnapshot {
   callable: boolean;
   providerStatus: string;
   commands: string[];
+  taskCounts: DashboardTaskCounts;
+  tasks: DashboardTaskItem[];
 }
 
 type DashboardHandlers = {
@@ -17,6 +20,8 @@ type DashboardHandlers = {
   onConnect: () => Promise<void> | void;
   onOpenSettings: () => Promise<void> | void;
   onDiagnose: () => Promise<void>;
+  onCancelTask: (taskId: string) => Promise<void>;
+  onDeleteTask: (taskId: string) => Promise<void>;
 };
 
 let panel: vscode.WebviewPanel | null = null;
@@ -66,6 +71,29 @@ export function showDashboardPanel(handlers: DashboardHandlers): void {
       if (type === "diagnose") {
         await handlers.onDiagnose();
         await postSnapshot(handlers);
+        return;
+      }
+      if (type === "cancelTask") {
+        const taskId = typeof (message as { taskId?: unknown }).taskId === "string" ? (message as { taskId: string }).taskId.trim() : "";
+        if (!taskId) {
+          throw new Error("taskId is required.");
+        }
+        await handlers.onCancelTask(taskId);
+        await postSnapshot(handlers);
+        return;
+      }
+      if (type === "deleteTask") {
+        const taskId = typeof (message as { taskId?: unknown }).taskId === "string" ? (message as { taskId: string }).taskId.trim() : "";
+        if (!taskId) {
+          throw new Error("taskId is required.");
+        }
+        const { message: confirmMessage, actionLabel } = getDeleteTaskConfirmation(handlers.getSnapshot().locale);
+        const confirmed = await vscode.window.showWarningMessage(confirmMessage, { modal: true }, actionLabel);
+        if (confirmed !== actionLabel) {
+          return;
+        }
+        await handlers.onDeleteTask(taskId);
+        await postSnapshot(handlers);
       }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -103,6 +131,19 @@ function createNonce(): string {
   return value;
 }
 
+function getDeleteTaskConfirmation(locale: string): { message: string; actionLabel: string } {
+  if (locale === "en") {
+    return {
+      message: "Delete this task from local history? This cannot be undone.",
+      actionLabel: "Delete",
+    };
+  }
+  return {
+    message: "确定从本地任务历史中删除这个任务？此操作不可撤销。",
+    actionLabel: "删除",
+  };
+}
+
 function getHtml(cspSource: string, nonce: string): string {
   const initialLocale = JSON.stringify(getCurrentLocale());
 
@@ -121,6 +162,7 @@ function getHtml(cspSource: string, nonce: string): string {
       --line: color-mix(in srgb, var(--vscode-widget-border, #444) 60%, transparent);
       --ok-bg: color-mix(in srgb, #3fb950 14%, transparent);
       --warn-bg: color-mix(in srgb, #d29922 16%, transparent);
+      --danger-bg: color-mix(in srgb, #f14c4c 14%, transparent);
       --muted-bg: color-mix(in srgb, var(--vscode-descriptionForeground) 10%, transparent);
     }
     body {
@@ -208,6 +250,7 @@ function getHtml(cspSource: string, nonce: string): string {
     }
     .ok { color: #4caf50; }
     .warn { color: #d9a400; }
+    .danger { color: var(--vscode-errorForeground, #f14c4c); }
     .muted { color: var(--vscode-descriptionForeground); }
     .row {
       display: flex;
@@ -255,10 +298,146 @@ function getHtml(cspSource: string, nonce: string): string {
       padding: 10px 12px;
       color: var(--vscode-errorForeground, #f14c4c);
     }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .task-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      min-width: 280px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 86%, var(--vscode-sideBar-background) 14%);
+    }
+    .metric-label {
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .metric-value {
+      margin-top: 6px;
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      background: var(--muted-bg);
+    }
+    .task-list {
+      display: grid;
+      gap: 10px;
+    }
+    .task-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-sideBar-background) 12%);
+    }
+    .task-main {
+      min-width: 0;
+    }
+    .task-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .task-title {
+      font-size: 14px;
+      font-weight: 600;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--muted-bg);
+    }
+    .badge.ok {
+      color: inherit;
+      background: var(--ok-bg);
+    }
+    .badge.warn {
+      color: inherit;
+      background: var(--warn-bg);
+    }
+    .badge.danger {
+      color: inherit;
+      background: var(--danger-bg);
+    }
+    .task-summary {
+      line-height: 1.5;
+      margin-bottom: 8px;
+      word-break: break-word;
+    }
+    .task-meta {
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+    }
+    .task-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      align-self: start;
+    }
+    .task-action {
+      padding: 8px 12px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .task-action.delete {
+      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 74%, var(--vscode-errorForeground, #f14c4c) 26%);
+    }
     @media (max-width: 860px) {
       .hero { flex-direction: column; }
       .layout { grid-template-columns: 1fr; }
       .stats { grid-template-columns: 1fr; }
+      .section-head {
+        flex-direction: column;
+      }
+      .task-metrics {
+        grid-template-columns: 1fr;
+        min-width: 0;
+        width: 100%;
+      }
+      .task-item {
+        grid-template-columns: 1fr;
+      }
+      .task-actions {
+        justify-content: flex-start;
+      }
     }
   </style>
 </head>
@@ -304,6 +483,30 @@ function getHtml(cspSource: string, nonce: string): string {
       </div>
     </div>
     <div class="card">
+      <div class="section-head">
+        <div>
+          <div class="title" id="tasksTitle"></div>
+          <div class="hint" id="tasksHint"></div>
+        </div>
+        <div class="task-metrics">
+          <div class="metric">
+            <div class="metric-label" id="taskTotalLabel"></div>
+            <div class="metric-value" id="taskTotalValue">0</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label" id="taskActiveLabel"></div>
+            <div class="metric-value" id="taskActiveValue">0</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label" id="taskTerminalLabel"></div>
+            <div class="metric-value" id="taskTerminalValue">0</div>
+          </div>
+        </div>
+      </div>
+      <div id="taskCounts" class="chips"></div>
+      <div id="taskList" class="task-list"></div>
+    </div>
+    <div class="card">
       <div class="title" id="commandsTitle"></div>
       <ul id="commands" class="cmds"></ul>
     </div>
@@ -314,8 +517,8 @@ function getHtml(cspSource: string, nonce: string): string {
     const copy = {
       title: { "zh-CN": "\\u63a7\\u5236\\u53f0", "en": "Dashboard" },
       subtitle: {
-        "zh-CN": "\\u53ea\\u4fdd\\u7559\\u5fc5\\u8981\\u6d41\\u7a0b\\uff1a\\u5148\\u770b\\u72b6\\u6001\\uff0c\\u9700\\u8981\\u65f6\\u6253\\u5f00\\u8bbe\\u7f6e\\uff0c\\u4fee\\u6539\\u540e\\u76f4\\u63a5\\u70b9\\u201c\\u4fdd\\u5b58\\u5e76\\u8fde\\u63a5\\u201d\\u3002",
-        "en": "Only the essential flow remains: check status, open settings when needed, then save and connect."
+        "zh-CN": "\\u5728\\u4e00\\u4e2a\\u63a7\\u5236\\u53f0\\u91cc\\u67e5\\u770b\\u8fde\\u63a5\\u72b6\\u6001\\u3001\\u89c2\\u5bdf\\u6700\\u8fd1\\u4efb\\u52a1\\uff0c\\u5e76\\u5904\\u7406\\u5e38\\u89c1\\u6062\\u590d\\u64cd\\u4f5c\\u3002",
+        "en": "See connection status, watch recent tasks, and handle the most common recovery actions from one place."
       },
       overviewTitle: { "zh-CN": "\\u5f53\\u524d\\u72b6\\u6001", "en": "Current State" },
       connectionLabel: { "zh-CN": "\\u8fde\\u63a5", "en": "Connection" },
@@ -333,6 +536,22 @@ function getHtml(cspSource: string, nonce: string): string {
       reconnect: { "zh-CN": "\\u91cd\\u65b0\\u8fde\\u63a5", "en": "Reconnect" },
       settings: { "zh-CN": "\\u6253\\u5f00\\u8bbe\\u7f6e", "en": "Open Settings" },
       diagnose: { "zh-CN": "\\u8fd0\\u884c\\u8bca\\u65ad", "en": "Run Diagnosis" },
+      tasksTitle: { "zh-CN": "\\u6700\\u8fd1\\u4efb\\u52a1", "en": "Recent Tasks" },
+      tasksHint: {
+        "zh-CN": "\\u663e\\u793a\\u6700\\u8fd1 20 \\u6761\\u5df2\\u8ddf\\u8e2a\\u4efb\\u52a1\\uff0c\\u6d3b\\u8dc3\\u4efb\\u52a1\\u4f1a\\u6392\\u5728\\u524d\\u9762\\u3002",
+        "en": "Showing the latest 20 tracked tasks. Active and resumable tasks stay on top."
+      },
+      taskTotalLabel: { "zh-CN": "\\u603b\\u6570", "en": "Total" },
+      taskActiveLabel: { "zh-CN": "\\u6d3b\\u8dc3", "en": "Active" },
+      taskTerminalLabel: { "zh-CN": "\\u7ec8\\u6001", "en": "Terminal" },
+      noTasks: { "zh-CN": "\\u5f53\\u524d\\u8fd8\\u6ca1\\u6709\\u5df2\\u8ddf\\u8e2a\\u7684\\u4efb\\u52a1", "en": "No tracked tasks yet." },
+      lastUpdated: { "zh-CN": "\\u6700\\u540e\\u66f4\\u65b0", "en": "Last updated" },
+      cancelTask: { "zh-CN": "\\u53d6\\u6d88", "en": "Cancel" },
+      deleteTask: { "zh-CN": "\\u5220\\u9664", "en": "Delete" },
+      confirmDelete: {
+        "zh-CN": "\\u786e\\u5b9a\\u4ece\\u672c\\u5730\\u4efb\\u52a1\\u5386\\u53f2\\u4e2d\\u5220\\u9664\\u8fd9\\u4e2a\\u4efb\\u52a1\\uff1f\\u6b64\\u64cd\\u4f5c\\u4e0d\\u53ef\\u64a4\\u9500\\u3002",
+        "en": "Delete this task from local history? This cannot be undone."
+      },
       commandsTitle: { "zh-CN": "\\u5f53\\u524d\\u547d\\u4ee4\\u9762", "en": "Current Command Surface" },
       commandsEmpty: { "zh-CN": "\\u5f53\\u524d\\u6ca1\\u6709\\u5e7f\\u544a\\u4efb\\u4f55\\u547d\\u4ee4", "en": "No commands advertised" },
       pillConnected: { "zh-CN": "Gateway \\u5df2\\u8fde\\u63a5", "en": "Gateway Connected" },
@@ -371,7 +590,116 @@ function getHtml(cspSource: string, nonce: string): string {
       el.textContent = value;
       el.className = "value " + cssClass;
     }
+    function formatTimestamp(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return value || "-";
+      }
+      return date.toLocaleString(state.locale === "en" ? "en" : "zh-CN", { hour12: false });
+    }
+    function healthClass(health) {
+      if (health === "failed") {
+        return "danger";
+      }
+      if (health === "degraded" || health === "warning") {
+        return "warn";
+      }
+      return "ok";
+    }
+    function renderTaskCounts(taskCounts) {
+      document.getElementById("taskTotalValue").textContent = String(taskCounts.total || 0);
+      document.getElementById("taskActiveValue").textContent = String(taskCounts.active || 0);
+      document.getElementById("taskTerminalValue").textContent = String(taskCounts.terminal || 0);
+      const counts = document.getElementById("taskCounts");
+      counts.innerHTML = "";
+      (taskCounts.byState || []).filter((entry) => entry.count > 0).forEach((entry) => {
+        const chip = document.createElement("div");
+        chip.className = "chip";
+        chip.textContent = entry.label + ": " + entry.count;
+        counts.appendChild(chip);
+      });
+    }
+    function renderTasks(tasks) {
+      const list = document.getElementById("taskList");
+      list.innerHTML = "";
+      if (!tasks || !tasks.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = tr("noTasks");
+        list.appendChild(empty);
+        return;
+      }
+      tasks.forEach((task) => {
+        const item = document.createElement("div");
+        item.className = "task-item";
+
+        const main = document.createElement("div");
+        main.className = "task-main";
+
+        const top = document.createElement("div");
+        top.className = "task-top";
+
+        const title = document.createElement("div");
+        title.className = "task-title";
+        title.textContent = task.title;
+        top.appendChild(title);
+
+        const stateBadge = document.createElement("span");
+        stateBadge.className = "badge";
+        stateBadge.textContent = task.stateLabel;
+        top.appendChild(stateBadge);
+
+        if (task.executionHealth !== "clean") {
+          const healthBadge = document.createElement("span");
+          healthBadge.className = "badge " + healthClass(task.executionHealth);
+          healthBadge.textContent = task.executionHealthLabel;
+          top.appendChild(healthBadge);
+        }
+
+        const summary = document.createElement("div");
+        summary.className = "task-summary";
+        summary.textContent = task.summary;
+
+        const meta = document.createElement("div");
+        meta.className = "task-meta";
+        meta.textContent = tr("lastUpdated") + ": " + formatTimestamp(task.updatedAt);
+
+        main.appendChild(top);
+        main.appendChild(summary);
+        main.appendChild(meta);
+
+        const actions = document.createElement("div");
+        actions.className = "task-actions";
+
+        if (task.canCancel) {
+          const cancel = document.createElement("button");
+          cancel.className = "secondary task-action";
+          cancel.textContent = tr("cancelTask");
+          cancel.dataset.action = "cancel";
+          cancel.dataset.taskId = task.taskId;
+          cancel.dataset.taskTitle = task.title;
+          actions.appendChild(cancel);
+        }
+
+        if (task.canDelete) {
+          const remove = document.createElement("button");
+          remove.className = "secondary task-action delete";
+          remove.textContent = tr("deleteTask");
+          remove.dataset.action = "delete";
+          remove.dataset.taskId = task.taskId;
+          remove.dataset.taskTitle = task.title;
+          actions.appendChild(remove);
+        }
+
+        item.appendChild(main);
+        item.appendChild(actions);
+        list.appendChild(item);
+      });
+    }
     function renderSnapshot(snapshot) {
+      if (snapshot.locale) {
+        state.locale = snapshot.locale;
+      }
       const pill = document.getElementById("connectionPill");
       const connectButton = document.getElementById("connect");
       let connectionValue = tr("valueDisconnected");
@@ -417,11 +745,27 @@ function getHtml(cspSource: string, nonce: string): string {
           list.appendChild(li);
         });
       }
+      renderTaskCounts(snapshot.taskCounts || { total: 0, active: 0, terminal: 0, byState: [] });
+      renderTasks(snapshot.tasks || []);
       applyCopy();
     }
     document.getElementById("connect").addEventListener("click", () => vscode.postMessage({ type: "connect" }));
     document.getElementById("settings").addEventListener("click", () => vscode.postMessage({ type: "settings" }));
     document.getElementById("diagnose").addEventListener("click", () => vscode.postMessage({ type: "diagnose" }));
+    document.getElementById("taskList").addEventListener("click", (event) => {
+      const button = event.target instanceof HTMLElement ? event.target.closest("button[data-action]") : null;
+      if (!button) {
+        return;
+      }
+      const taskId = button.dataset.taskId || "";
+      if (!taskId) {
+        return;
+      }
+      vscode.postMessage({
+        type: button.dataset.action === "delete" ? "deleteTask" : "cancelTask",
+        taskId,
+      });
+    });
     window.addEventListener("message", (event) => {
       const msg = event.data || {};
       if (msg.type === "snapshot") {
