@@ -17,6 +17,7 @@ import { ClawDriveStatusBar } from "./status-bar";
 import { runSelftest } from "./selftest-runner";
 import { TaskService } from "./tasks/service";
 
+// Minimal comment change for apply-flow verification.
 class ClawDriveRuntime {
   private readonly context: vscode.ExtensionContext;
   private readonly statusBar: ClawDriveStatusBar;
