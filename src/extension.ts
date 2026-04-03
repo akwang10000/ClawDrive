@@ -2,7 +2,6 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { ClawDriveActivityProvider } from "./activity-view";
-import { ClaudeVsCodeUriHandoff } from "./claude-vscode-handoff";
 import { getConfig } from "./config";
 import { dispatchCommand, getRegisteredCommands, initializeCommandRegistry } from "./commands/registry";
 import { buildDashboardTaskSnapshot } from "./dashboard-tasks";
@@ -18,14 +17,12 @@ import { ClawDriveStatusBar } from "./status-bar";
 import { runSelftest } from "./selftest-runner";
 import { TaskService } from "./tasks/service";
 
-// Minimal comment change for apply-flow verification.
 class ClawDriveRuntime {
   private readonly context: vscode.ExtensionContext;
   private readonly statusBar: ClawDriveStatusBar;
   private readonly taskService: TaskService;
   private readonly activityProvider: ClawDriveActivityProvider;
   private readonly routeService: AgentRouteService;
-  private readonly claudeVsCodeHandoff: ClaudeVsCodeUriHandoff;
   private client: GatewayClient | null = null;
   private connectionState: ConnectionState = "disconnected";
 
@@ -34,12 +31,10 @@ class ClawDriveRuntime {
     this.taskService = new TaskService(context);
     this.activityProvider = new ClawDriveActivityProvider(this.taskService);
     this.statusBar = new ClawDriveStatusBar();
-    this.claudeVsCodeHandoff = new ClaudeVsCodeUriHandoff();
     this.routeService = new AgentRouteService({
       taskService: this.taskService,
       getConnectionState: () => this.connectionState,
       getProviderStatus: () => this.taskService.getProviderStatus(),
-      claudeVsCodeHandoff: this.claudeVsCodeHandoff,
     });
     initializeCommandRegistry({
       taskService: this.taskService,
@@ -183,28 +178,6 @@ class ClawDriveRuntime {
     await runSelftest(this.routeService, this.taskService);
   }
 
-  async openInClaudeCode(prompt?: string): Promise<void> {
-    const resolvedPrompt = prompt?.trim() || (await vscode.window.showInputBox({
-      prompt: "Prompt to prefill in Claude Code for VS Code",
-      placeHolder: "Review the current repository structure and highlight the main risks.",
-      ignoreFocusOut: true,
-    }))?.trim();
-
-    if (!resolvedPrompt) {
-      return;
-    }
-
-    const result = await this.claudeVsCodeHandoff.openPrompt({ prompt: resolvedPrompt });
-    if (result.ok) {
-      await vscode.window.showInformationMessage(
-        "Claude Code for VS Code opened with a prefilled prompt. Claude does not auto-submit prefilled prompts."
-      );
-      return;
-    }
-
-    await vscode.window.showErrorMessage(result.message);
-  }
-
   getDashboardSnapshot() {
     const cfg = getConfig();
     const taskSnapshot = buildDashboardTaskSnapshot(this.taskService.listAllTasks(), 20);
@@ -260,7 +233,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
       });
     }),
-    vscode.commands.registerCommand("clawdrive.openInClaudeCode", (prompt?: string) => runtime.openInClaudeCode(prompt)),
     vscode.commands.registerCommand("clawdrive.connect", () => runtime.connect()),
     vscode.commands.registerCommand("clawdrive.disconnect", () => runtime.disconnect()),
     vscode.commands.registerCommand("clawdrive.showStatus", () => runtime.showStatus()),
