@@ -3,6 +3,7 @@ import type { ConnectionState } from "../gateway-client";
 import { getCurrentLocale } from "../i18n";
 import { taskExecutionHealthLabel, taskResumePrompt, taskStateLabel } from "../tasks/text";
 import type { ProviderStatusInfo } from "../tasks/types";
+import type { ClaudeVsCodeHandoff } from "../claude-vscode-handoff";
 import { TaskService } from "../tasks/service";
 import {
   classifyIntent,
@@ -24,6 +25,7 @@ interface AgentRouteServiceOptions {
   getConnectionState: () => ConnectionState;
   getProviderStatus: () => ProviderStatusInfo;
   inspector?: WorkspaceInspector;
+  claudeVsCodeHandoff?: ClaudeVsCodeHandoff;
 }
 
 export class AgentRouteService {
@@ -39,6 +41,8 @@ export class AgentRouteService {
     const intent = classifyIntent(prompt, paths);
 
     switch (intent.type) {
+      case "claude_vscode":
+        return await this.routeClaudeVsCode(prompt);
       case "continue":
         return await this.routeContinue(prompt);
       case "plan":
@@ -185,6 +189,46 @@ export class AgentRouteService {
           ? text("The latest task is already running.", "\u6700\u8fd1\u7684\u4efb\u52a1\u6b63\u5728\u8fd0\u884c\u4e2d\u3002")
           : text("The latest task is already queued.", "\u6700\u8fd1\u7684\u4efb\u52a1\u5df2\u7ecf\u5728\u961f\u5217\u91cc\u4e86\u3002"),
       data: snapshot,
+    };
+  }
+
+  private async routeClaudeVsCode(prompt: string): Promise<AgentRouteResponse> {
+    if (!this.options.claudeVsCodeHandoff) {
+      return {
+        kind: "direct_result",
+        route: "claude_vscode",
+        message: text(
+          "Claude Code for VS Code handoff is not available in this environment.",
+          "当前环境里没有可用的 Claude Code for VS Code 交接能力。"
+        ),
+        data: {
+          ok: false,
+          target: "claude-vscode",
+          code: "CLAUDE_VSCODE_UNAVAILABLE",
+          prompt,
+          autoSubmitted: false,
+        },
+      };
+    }
+
+    const result = await this.options.claudeVsCodeHandoff.openPrompt({ prompt });
+    if (result.ok) {
+      return {
+        kind: "direct_result",
+        route: "claude_vscode",
+        message: text(
+          "I opened Claude Code for VS Code and prefilled your prompt. Claude does not auto-submit prefilled prompts, so send it from the Claude tab.",
+          "我已经打开 Claude Code for VS Code 并预填了提示词。Claude 不会自动发送预填内容，请在 Claude 标签页里手动发送。"
+        ),
+        data: result,
+      };
+    }
+
+    return {
+      kind: "direct_result",
+      route: "claude_vscode",
+      message: result.message,
+      data: result,
     };
   }
 

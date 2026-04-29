@@ -109,6 +109,60 @@ test("AgentRouteService diagnose prefers degraded completion over generic active
   assert.match(response.message, /degraded/i);
 });
 
+test("AgentRouteService hands explicit Claude Code for VS Code requests off as a direct result", async () => {
+  setLanguage("en");
+  const service = new AgentRouteService({
+    taskService: {} as never,
+    getConnectionState: () => "connected",
+    getProviderStatus: () => providerStatus,
+    claudeVsCodeHandoff: {
+      openPrompt: async ({ prompt }) => ({
+        ok: true as const,
+        target: "claude-vscode" as const,
+        extensionId: "anthropic.claude-code",
+        prompt,
+        uri: "vscode://anthropic.claude-code/open?prompt=Review",
+        autoSubmitted: false as const,
+      }),
+    },
+  });
+
+  const response = await service.route({ prompt: "Open this in Claude Code for VS Code and continue there." });
+  assert.equal(response.kind, "direct_result");
+  assert.equal(response.route, "claude_vscode");
+  assert.match(response.message, /does not auto-submit/i);
+});
+
+test("AgentRouteService reports Claude Code for VS Code readiness failures without starting a task", async () => {
+  setLanguage("en");
+  const service = new AgentRouteService({
+    taskService: {
+      startTask: async () => {
+        throw new Error("should not start provider task");
+      },
+    } as never,
+    getConnectionState: () => "connected",
+    getProviderStatus: () => providerStatus,
+    claudeVsCodeHandoff: {
+      openPrompt: async ({ prompt }) => ({
+        ok: false as const,
+        target: "claude-vscode" as const,
+        code: "CLAUDE_VSCODE_NOT_INSTALLED" as const,
+        message: "Claude Code for VS Code is not installed.",
+        prompt,
+        autoSubmitted: false as const,
+      }),
+    },
+  });
+
+  const response = await service.route({ prompt: "Open this in Claude Code for VS Code." });
+  assert.equal(response.kind, "direct_result");
+  assert.equal(response.route, "claude_vscode");
+  assert.match(response.message, /not installed/i);
+});
+
+
+
 test("AgentRouteService infers an explicit file path from the prompt for direct reads", async () => {
   setLanguage("en");
   const service = new AgentRouteService({
@@ -131,6 +185,39 @@ test("AgentRouteService infers an explicit file path from the prompt for direct 
   assert.equal(response.kind, "direct_result");
   assert.equal(response.route, "inspect");
   assert.equal((response.data as { path: string }).path, "README.md");
+});
+
+
+
+test("AgentRouteService starts plan tasks for option-selection prompts", async () => {
+  setLanguage("en");
+  const service = new AgentRouteService({
+    taskService: {
+      startTask: async (params: { prompt: string; mode: "analyze" | "plan" | "apply"; paths: string[] }) => {
+        assert.equal(params.mode, "plan");
+        assert.equal(params.prompt, "Give me two safe next-step options for investigating this workspace. Do not modify anything.");
+        assert.deepEqual(params.paths, []);
+        return {
+          ...makeTask("task-plan-start", "queued"),
+          mode: params.mode,
+          prompt: params.prompt,
+          paths: params.paths,
+          summary: "Plan task queued.",
+        };
+      },
+    } as never,
+    getConnectionState: () => "connected",
+    getProviderStatus: () => providerStatus,
+  });
+
+  const response = await service.route({
+    prompt: "Give me two safe next-step options for investigating this workspace. Do not modify anything.",
+  });
+
+  assert.equal(response.kind, "task");
+  assert.equal(response.route, "plan");
+  assert.equal(response.data.mode, "plan");
+  assert.match(response.message, /planning task/i);
 });
 
 test("AgentRouteService uses bounded local search for code-location prompts", async () => {

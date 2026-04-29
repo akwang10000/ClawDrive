@@ -1,7 +1,7 @@
 /* eslint-disable no-console */
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const childProcess = require("child_process");
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_POLL_MS = 1_500;
@@ -55,7 +55,7 @@ function resolveOpenClawRunner() {
   }
 
   if (process.platform === "win32") {
-    const located = spawnSync("where.exe", ["openclaw.cmd"], { encoding: "utf8" });
+    const located = childProcess.spawnSync("where.exe", ["openclaw.cmd"], { encoding: "utf8" });
     const wrapperPath = located.status === 0
       ? located.stdout.split(/\r?\n/).map((entry) => entry.trim()).find(Boolean)
       : null;
@@ -87,6 +87,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function sleepSync(ms) {
+  const durationMs = Math.max(0, Math.floor(ms));
+  if (!durationMs) {
+    return;
+  }
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, durationMs);
+}
+
 function summarizeOutput(raw) {
   const lines = String(raw || "")
     .split(/\r?\n/)
@@ -116,7 +126,7 @@ function extractLastJsonValue(text) {
 }
 
 function runOpenClawJson(runner, args, label) {
-  const result = spawnSync(runner.command, [...runner.baseArgs, ...args], {
+  const result = childProcess.spawnSync(runner.command, [...runner.baseArgs, ...args], {
     encoding: "utf8",
     timeout: DEFAULT_POLL_LIMIT_MS + DEFAULT_TIMEOUT_MS,
     windowsHide: true,
@@ -165,18 +175,106 @@ function selectNode(nodes, explicitNodeId, nameHint) {
   return nodes.find((node) => node.connected) || nodes[0];
 }
 
+function isNodeConnected(node) {
+  return node?.connected === true;
+}
+
+function nodeSupportsCommand(node, command) {
+  if (!command) {
+    return true;
+  }
+  const commands = Array.isArray(node?.commands) ? node.commands : [];
+  return commands.includes(command);
+}
+
+function rankCandidateNodes(nodes, nameHint, command) {
+  const normalizedHint = (nameHint || "").trim().toLowerCase();
+  const hintedSupportedConnected = [];
+  const supportedConnected = [];
+  const hintedConnected = [];
+  const connected = [];
+  const hinted = [];
+  const fallback = [];
+
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    const label = `${node?.displayName || node?.name || ""}`.toLowerCase();
+    const matchesHint = normalizedHint ? label.includes(normalizedHint) : false;
+    const connectedNode = isNodeConnected(node);
+    const supportsCommand = nodeSupportsCommand(node, command);
+    if (matchesHint && connectedNode && supportsCommand) {
+      hintedSupportedConnected.push(node);
+      continue;
+    }
+    if (connectedNode && supportsCommand) {
+      supportedConnected.push(node);
+      continue;
+    }
+    if (matchesHint && connectedNode) {
+      hintedConnected.push(node);
+      continue;
+    }
+    if (connectedNode) {
+      connected.push(node);
+      continue;
+    }
+    if (matchesHint) {
+      hinted.push(node);
+      continue;
+    }
+    fallback.push(node);
+  }
+
+  return [...hintedSupportedConnected, ...supportedConnected, ...hintedConnected, ...connected, ...hinted, ...fallback];
+}
+
+function selectRefreshedNode(rankedNodes, currentNodeRef) {
+  if (!Array.isArray(rankedNodes) || rankedNodes.length === 0) {
+    return null;
+  }
+
+  const preferred = rankedNodes[0];
+  if (resolveNodeRef(preferred, "") !== currentNodeRef) {
+    return preferred;
+  }
+
+  const connectedAlternative = rankedNodes.find(
+    (node) => node?.connected && resolveNodeRef(node, "") !== currentNodeRef
+  );
+  return connectedAlternative || preferred;
+}
+
+function applyNodeContext(nodeContext, node, explicitNodeId) {
+  const nodeRef = resolveNodeRef(node, explicitNodeId || "");
+  if (!node || !nodeRef) {
+    return false;
+  }
+  nodeContext.node = node;
+  nodeContext.nodeRef = nodeRef;
+  nodeContext.nodeId = node.nodeId || node.id || nodeContext.nodeId;
+  nodeContext.displayName = node.displayName || node.name || nodeContext.displayName;
+  return true;
+}
+
 function resolveNodeRef(node, explicitNodeId) {
   if (explicitNodeId) {
     return explicitNodeId;
   }
-  return `${node?.displayName || node?.name || node?.nodeId || node?.id || ""}`;
+  const displayName = `${node?.displayName || node?.name || ""}`.trim();
+  if (displayName) {
+    return displayName;
+  }
+  return `${node?.nodeId || node?.id || ""}`;
 }
 
 function listNodes(runner, gateway) {
   const sharedArgs = buildGatewayCliArgs(gateway);
-  const statusPayload = runOpenClawJson(runner, ["nodes", "status", ...sharedArgs], "nodes status");
-  if (Array.isArray(statusPayload?.nodes)) {
-    return statusPayload.nodes;
+  try {
+    const statusPayload = runOpenClawJson(runner, ["nodes", "status", ...sharedArgs], "nodes status");
+    if (Array.isArray(statusPayload?.nodes)) {
+      return statusPayload.nodes;
+    }
+  } catch {
+    // Fall through to gateway call fallback.
   }
 
   const fallback = runOpenClawJson(runner, ["gateway", "call", "node.list", ...sharedArgs], "gateway call node.list");
@@ -189,7 +287,31 @@ function listNodes(runner, gateway) {
   return [];
 }
 
-function invokeNodeCommand(runner, gateway, nodeContext, command, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
+function isUnknownNodeError(error) {
+  return /unknown node/i.test(String(error?.message || error));
+}
+
+function isTransientGatewayError(error) {
+  return /gateway (?:closed|connect failed|timeout)|normal closure/i.test(String(error?.message || error));
+}
+
+function refreshNodeContext(runner, gateway, nodeContext, command) {
+  const ranked = rankCandidateNodes(listNodes(runner, gateway), nodeContext.nameHint, command);
+  if (ranked.length === 0) {
+    return false;
+  }
+  const alternative = selectRefreshedNode(ranked, nodeContext.nodeRef);
+  return alternative ? applyNodeContext(nodeContext, alternative, "") : false;
+}
+
+function buildNodeInvokeRefs(nodeContext) {
+  if (nodeContext.explicitNodeId) {
+    return [nodeContext.explicitNodeId];
+  }
+  return [...new Set([nodeContext.nodeRef, nodeContext.nodeId, nodeContext.displayName].filter(Boolean))];
+}
+
+function tryInvokeNodeCommand(runner, gateway, nodeContext, command, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const invokeArgs = (nodeRef) => [
     "nodes",
     "invoke",
@@ -207,29 +329,104 @@ function invokeNodeCommand(runner, gateway, nodeContext, command, params, timeou
   ];
   const unwrapPayload = (value) => (value?.payload !== undefined ? value.payload : value);
 
+  let lastError = null;
+  for (const nodeRef of buildNodeInvokeRefs(nodeContext)) {
+    try {
+      return unwrapPayload(runOpenClawJson(runner, invokeArgs(nodeRef), `nodes invoke ${command}`));
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+function invokeNodeCommand(runner, gateway, nodeContext, command, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
   try {
-    return unwrapPayload(runOpenClawJson(runner, invokeArgs(nodeContext.nodeRef), `nodes invoke ${command}`));
+    return tryInvokeNodeCommand(runner, gateway, nodeContext, command, params, timeoutMs);
   } catch (error) {
-    if (nodeContext.explicitNodeId || !/unknown node/i.test(String(error?.message || error))) {
+    if (nodeContext.explicitNodeId) {
       throw error;
     }
-    const refreshed = selectNode(listNodes(runner, gateway), "", nodeContext.nameHint);
-    const refreshedRef = resolveNodeRef(refreshed, "");
-    if (!refreshed || !refreshedRef || refreshedRef === nodeContext.nodeRef) {
+    if (!isUnknownNodeError(error) && !isTransientGatewayError(error)) {
       throw error;
     }
-    nodeContext.node = refreshed;
-    nodeContext.nodeRef = refreshedRef;
-    nodeContext.nodeId = refreshed.nodeId || refreshed.id || nodeContext.nodeId;
-    nodeContext.displayName = refreshed.displayName || refreshed.name || nodeContext.displayName;
-    return unwrapPayload(runOpenClawJson(runner, invokeArgs(nodeContext.nodeRef), `nodes invoke ${command}`));
+    let lastError = error;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (!refreshNodeContext(runner, gateway, nodeContext, command)) {
+        throw lastError;
+      }
+      try {
+        return tryInvokeNodeCommand(runner, gateway, nodeContext, command, params, timeoutMs);
+      } catch (retryError) {
+        if (!isUnknownNodeError(retryError) && !isTransientGatewayError(retryError)) {
+          throw retryError;
+        }
+        lastError = retryError;
+      }
+    }
+    throw lastError;
   }
 }
 
-async function waitForTask(runner, gateway, nodeContext, taskId) {
+function invokeNodeCommandWithRecovery(runner, gateway, nodeContext, command, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return invokeNodeCommand(runner, gateway, nodeContext, command, params, timeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (nodeContext.explicitNodeId) {
+        throw error;
+      }
+      if (!isUnknownNodeError(error) && !isTransientGatewayError(error)) {
+        throw error;
+      }
+      sleepSync(500);
+    }
+  }
+  throw lastError;
+}
+
+function createApplyProgressTracker() {
+  return {
+    observedStates: [],
+    runningSnapshotSeen: false,
+    providerEvidenceDuringRunning: false,
+    decisionSeen: false,
+    approvalSeen: false,
+    finalState: null,
+    finalExecutionHealth: null,
+  };
+}
+
+function recordApplyProgress(tracker, snapshot) {
+  if (!tracker || !snapshot) {
+    return;
+  }
+  if (tracker.observedStates[tracker.observedStates.length - 1] !== snapshot.state) {
+    tracker.observedStates.push(snapshot.state);
+  }
+  if (snapshot.state === "running") {
+    tracker.runningSnapshotSeen = true;
+    if (snapshot.providerEvidence) {
+      tracker.providerEvidenceDuringRunning = true;
+    }
+  }
+  if (snapshot.decision) {
+    tracker.decisionSeen = true;
+  }
+  if (snapshot.approval) {
+    tracker.approvalSeen = true;
+  }
+  tracker.finalState = snapshot.state || tracker.finalState;
+  tracker.finalExecutionHealth = snapshot.executionHealth || tracker.finalExecutionHealth;
+}
+
+async function waitForTask(runner, gateway, nodeContext, taskId, tracker) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < DEFAULT_POLL_LIMIT_MS) {
-    const snapshot = invokeNodeCommand(runner, gateway, nodeContext, "vscode.agent.task.status", { taskId });
+    const snapshot = invokeNodeCommandWithRecovery(runner, gateway, nodeContext, "vscode.agent.task.status", { taskId });
+    recordApplyProgress(tracker, snapshot);
     if (snapshot?.state && snapshot.state !== "running" && snapshot.state !== "queued") {
       return snapshot;
     }
@@ -238,9 +435,70 @@ async function waitForTask(runner, gateway, nodeContext, taskId) {
   return null;
 }
 
+async function resolvePendingTask(runner, gateway, nodeContext, snapshot, tracker) {
+  let current = snapshot;
+  const maxSteps = 2;
+  for (let step = 0; step < maxSteps; step += 1) {
+    recordApplyProgress(tracker, current);
+    if (current?.state === "waiting_decision") {
+      const optionId = current?.decision?.recommendedOptionId || current?.decision?.options?.[0]?.id;
+      current = invokeNodeCommandWithRecovery(runner, gateway, nodeContext, "vscode.agent.task.respond", {
+        taskId: current.taskId,
+        optionId,
+        message: optionId ? undefined : "continue",
+      }, 30_000);
+      recordApplyProgress(tracker, current);
+      current = (await waitForTask(runner, gateway, nodeContext, current.taskId, tracker)) || current;
+      continue;
+    }
+    if (current?.state === "waiting_approval") {
+      current = invokeNodeCommandWithRecovery(runner, gateway, nodeContext, "vscode.agent.task.respond", {
+        taskId: current.taskId,
+        approval: "approved",
+      }, 30_000);
+      recordApplyProgress(tracker, current);
+      current = (await waitForTask(runner, gateway, nodeContext, current.taskId, tracker)) || current;
+      continue;
+    }
+    break;
+  }
+  recordApplyProgress(tracker, current);
+  return current;
+}
+
+function resolveWorkspaceRootFromInspectRoute(route) {
+  const rootPath = route?.data?.rootPath;
+  return typeof rootPath === "string" && rootPath.trim() ? rootPath.trim() : null;
+}
+
+function ensureScratchApplyFile(workspaceRoot) {
+  if (!workspaceRoot) {
+    return null;
+  }
+  const scratchApplyPath = path.join(workspaceRoot, ".claude", "selftest-apply-target.txt");
+  fs.mkdirSync(path.dirname(scratchApplyPath), { recursive: true });
+  fs.writeFileSync(scratchApplyPath, "selftest-before\n", "utf8");
+  return scratchApplyPath;
+}
+
 function saveReport(report) {
   const outPath = path.join(process.cwd(), "selftest-report.json");
   fs.writeFileSync(outPath, JSON.stringify(report, null, 2), "utf8");
+}
+
+function formatApplyStatus(progress) {
+  if (!progress) {
+    return "apply-progress-missing";
+  }
+  const parts = [`states=${progress.observedStates.join("->") || "none"}`];
+  parts.push(`running=${progress.runningSnapshotSeen ? "yes" : "no"}`);
+  parts.push(`evidence@running=${progress.providerEvidenceDuringRunning ? "yes" : "no"}`);
+  parts.push(`decision=${progress.decisionSeen ? "yes" : "no"}`);
+  parts.push(`approval=${progress.approvalSeen ? "yes" : "no"}`);
+  if (progress.finalState) {
+    parts.push(`final=${progress.finalState}${progress.finalExecutionHealth ? `/${progress.finalExecutionHealth}` : ""}`);
+  }
+  return parts.join(", ");
 }
 
 function printSummary(report) {
@@ -253,7 +511,9 @@ function printSummary(report) {
   for (const entry of report.cases) {
     const status = entry.error
       ? `error: ${entry.error}`
-      : entry.result?.snapshot?.state || entry.snapshot?.state || entry.route?.kind || "unknown";
+      : entry.name === "apply" && entry.applyProgress
+        ? formatApplyStatus(entry.applyProgress)
+        : entry.result?.snapshot?.state || entry.snapshot?.state || entry.route?.kind || "unknown";
     console.log(`- ${entry.name}: ${status}`);
   }
   console.log("Report written to selftest-report.json");
@@ -307,6 +567,9 @@ async function run() {
       paired: node.paired === true,
     };
 
+    let workspaceRoot = null;
+    let scratchApplyPath = null;
+
     const prompts = [
       { name: "inspect", prompt: "List the top-level folders and files in the current workspace." },
       {
@@ -318,6 +581,11 @@ async function run() {
         name: "plan_complex",
         prompt: "Give me three feasible next-step options for this workspace, explain impact scope and main risks, and do not modify anything yet.",
       },
+      {
+        name: "apply",
+        prompt: "First produce a minimal change proposal for approval, then wait for confirmation before applying it. Do not stop before the approval step. Update the workspace file .claude/selftest-apply-target.txt by replacing the exact text selftest-before with selftest-after.",
+        autoResolve: true,
+      },
     ];
 
     for (const entry of prompts) {
@@ -328,21 +596,34 @@ async function run() {
         taskId: null,
         snapshot: null,
         result: null,
+        applyProgress: null,
         error: null,
       };
 
       try {
-        const route = invokeNodeCommand(runner, gateway, nodeContext, "vscode.agent.route", { prompt: entry.prompt }, 30_000);
+        const route = invokeNodeCommandWithRecovery(runner, gateway, nodeContext, "vscode.agent.route", { prompt: entry.prompt }, 30_000);
         caseResult.route = route;
+
+        if (entry.name === "inspect") {
+          workspaceRoot = resolveWorkspaceRootFromInspectRoute(route) || workspaceRoot;
+          scratchApplyPath = ensureScratchApplyFile(workspaceRoot) || scratchApplyPath;
+          report.workspaceRoot = workspaceRoot;
+          report.scratchApplyPath = scratchApplyPath;
+        }
 
         if (route?.kind === "task" || route?.kind === "task_result") {
           const taskId = route?.data?.taskId || route?.data?.snapshot?.taskId || null;
           if (taskId) {
             caseResult.taskId = taskId;
-            const finalSnapshot = await waitForTask(runner, gateway, nodeContext, taskId);
+            const tracker = createApplyProgressTracker();
+            let finalSnapshot = await waitForTask(runner, gateway, nodeContext, taskId, tracker);
+            if (finalSnapshot && entry.autoResolve) {
+              finalSnapshot = await resolvePendingTask(runner, gateway, nodeContext, finalSnapshot, tracker);
+            }
             if (finalSnapshot) {
               caseResult.snapshot = finalSnapshot;
-              caseResult.result = invokeNodeCommand(
+              caseResult.applyProgress = tracker.observedStates.length > 0 ? tracker : null;
+              caseResult.result = invokeNodeCommandWithRecovery(
                 runner,
                 gateway,
                 nodeContext,
@@ -351,6 +632,7 @@ async function run() {
                 30_000
               );
             } else {
+              caseResult.applyProgress = tracker.observedStates.length > 0 ? tracker : null;
               caseResult.error = "task timeout waiting for completion";
             }
           }
@@ -383,7 +665,21 @@ async function run() {
   printSummary(report);
 }
 
-run().catch((error) => {
-  console.error(`Selftest failed: ${error?.message || error}`);
-  process.exit(1);
-});
+module.exports = {
+  selectNode,
+  rankCandidateNodes,
+  selectRefreshedNode,
+  refreshNodeContext,
+  resolveNodeRef,
+  buildNodeInvokeRefs,
+  tryInvokeNodeCommand,
+  invokeNodeCommand,
+  invokeNodeCommandWithRecovery,
+};
+
+if (require.main === module) {
+  run().catch((error) => {
+    console.error(`Selftest failed: ${error?.message || error}`);
+    process.exit(1);
+  });
+}

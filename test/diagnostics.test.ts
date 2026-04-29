@@ -47,7 +47,7 @@ test("buildOperatorStatusFromDiagnosis highlights provider readiness problems", 
   assert.equal(status.providerReady, false);
   assert.equal(
     status.actionableHint,
-    "Fix provider readiness first, especially the Codex executable path or local installation."
+    "Fix provider readiness first, especially the selected provider executable path or local installation."
   );
 });
 
@@ -202,7 +202,7 @@ test("buildOperatorStatusFromDiagnosis points running transport content-type war
   assert.match(status.latestNonFatalSummary ?? "", /PROVIDER_TRANSPORT_RUNTIME_WARNING/);
   assert.equal(
     status.actionableHint,
-    "The latest task reached Codex and saw a downstream transport warning about a missing content-type or empty body. It may still recover, but if it remains stuck after turn.started, check MCP, relay, or provider-gateway compatibility."
+    "The latest task reached the provider and saw a downstream transport warning about a missing content-type or empty body. It may still recover, but if it remains stuck after turn.started, check MCP, relay, or provider-gateway compatibility."
   );
 });
 
@@ -264,4 +264,148 @@ test("buildOperatorStatusFromDiagnosis includes fallback transport detail for fa
     status.actionableHint,
     "Provider transport failed. Check the downstream MCP service status and ensure HTTP responses include a valid content-type."
   );
+});
+
+test("buildOperatorStatusFromDiagnosis highlights provider auth failure hints", () => {
+  const failedTask: TaskSnapshot = {
+    taskId: "task-auth",
+    title: "Plan: repo",
+    mode: "plan",
+    state: "failed",
+    prompt: "Plan the next step",
+    paths: [],
+    createdAt: "2026-03-21T12:00:00.000Z",
+    updatedAt: "2026-03-21T12:01:00.000Z",
+    summary: "Task failed: auth",
+    lastOutput: null,
+    executionHealth: "failed",
+    runtimeSignals: [
+      {
+        code: "PROVIDER_AUTH_FAILED",
+        severity: "fatal",
+        summary: "Provider authentication failed while contacting the upstream model service.",
+        detail: "No authentication found",
+        count: 1,
+        lastSeenAt: "2026-03-21T12:00:30.000Z",
+      },
+    ],
+    decision: null,
+    approval: null,
+    error: "Claude Code could not authenticate with the configured upstream model provider.",
+    errorCode: "PROVIDER_AUTH_FAILED",
+    providerKind: "claude",
+    providerSessionId: "session-auth",
+    resultSummary: null,
+    providerEvidence: null,
+  };
+
+  const status = buildOperatorStatusFromDiagnosis(
+    {
+      gatewayUrl: "ws://127.0.0.1:18789",
+      connectionState: "connected",
+      callable: true,
+      providerStatus: readyProvider,
+      findings: [],
+    },
+    failedTask
+  );
+
+  assert.match(status.actionableHint ?? "", /authentication failed|API key|Claude Code/i);
+  assert.match(status.latestFailureSummary ?? "", /PROVIDER_AUTH_FAILED/);
+});
+
+test("buildOperatorStatusFromDiagnosis highlights invalid Claude model hints", () => {
+  const failedTask: TaskSnapshot = {
+    taskId: "task-model",
+    title: "Plan: repo",
+    mode: "plan",
+    state: "failed",
+    prompt: "Plan the next step",
+    paths: [],
+    createdAt: "2026-03-21T12:00:00.000Z",
+    updatedAt: "2026-03-21T12:01:00.000Z",
+    summary: "Task failed: invalid model",
+    lastOutput: null,
+    executionHealth: "failed",
+    runtimeSignals: [
+      {
+        code: "PROVIDER_MODEL_INVALID",
+        severity: "fatal",
+        summary: "Provider model configuration is invalid or unavailable.",
+        detail: "invalid model: bad-model",
+        count: 1,
+        lastSeenAt: "2026-03-21T12:00:30.000Z",
+      },
+    ],
+    decision: null,
+    approval: null,
+    error: "The configured Claude model is invalid or unavailable. Check clawdrive.provider.claude.model.",
+    errorCode: "PROVIDER_MODEL_INVALID",
+    providerKind: "claude",
+    providerSessionId: "session-model",
+    resultSummary: null,
+    providerEvidence: null,
+  };
+
+  const status = buildOperatorStatusFromDiagnosis(
+    {
+      gatewayUrl: "ws://127.0.0.1:18789",
+      connectionState: "connected",
+      callable: true,
+      providerStatus: readyProvider,
+      findings: [],
+    },
+    failedTask
+  );
+
+  assert.match(status.actionableHint ?? "", /clawdrive\.provider\.claude\.model|default model/i);
+  assert.match(status.latestFailureSummary ?? "", /PROVIDER_MODEL_INVALID/);
+});
+
+test("buildOperatorStatusFromDiagnosis highlights MCP compatibility hints", () => {
+  const failedTask: TaskSnapshot = {
+    taskId: "task-mcp",
+    title: "Plan: repo",
+    mode: "plan",
+    state: "failed",
+    prompt: "Plan the next step",
+    paths: [],
+    createdAt: "2026-03-21T12:00:00.000Z",
+    updatedAt: "2026-03-21T12:01:00.000Z",
+    summary: "Task failed: MCP compatibility",
+    lastOutput: null,
+    executionHealth: "failed",
+    runtimeSignals: [
+      {
+        code: "PROVIDER_MCP_COMPATIBILITY_FAILED",
+        severity: "fatal",
+        summary: "Provider MCP compatibility failed while fetching tools or invoking methods.",
+        detail: 'MCP server "claude-vscode" Failed to fetch tools: MCP error -32601: Method not found',
+        count: 1,
+        lastSeenAt: "2026-03-21T12:00:30.000Z",
+      },
+    ],
+    decision: null,
+    approval: null,
+    error: "Claude Code could not use the configured MCP tools. Check claude-vscode MCP compatibility and tool registration.",
+    errorCode: "PROVIDER_MCP_COMPATIBILITY_FAILED",
+    providerKind: "claude",
+    providerSessionId: "session-mcp",
+    resultSummary: null,
+    providerEvidence: null,
+  };
+
+  const status = buildOperatorStatusFromDiagnosis(
+    {
+      gatewayUrl: "ws://127.0.0.1:18789",
+      connectionState: "connected",
+      callable: true,
+      providerStatus: readyProvider,
+      findings: [],
+    },
+    failedTask
+  );
+
+  assert.match(status.actionableHint ?? "", /MCP|tool registration|compatibility/i);
+  assert.match(status.latestFailureSummary ?? "", /PROVIDER_MCP_COMPATIBILITY_FAILED/);
 });

@@ -1,6 +1,6 @@
 ---
 name: vscode-skill
-description: VS Code skill. Natural-language control layer for the OpenClaw VS Code node. Use when the user says "VS Code skill", "vscode skill", "use VS Code", asks to inspect code, read files, summarize a repository, plan next steps, continue a VS Code task, or debug why the VS Code node is not callable.
+description: VS Code skill. Natural-language control layer for the OpenClaw VS Code node. Use when the user says "VS Code skill", "vscode skill", "use VS Code", asks to inspect code, read files, summarize a repository, plan next steps, continue a VS Code task, hand work off to Claude Code for VS Code, or debug why the VS Code node or provider is not callable.
 ---
 
 # VS Code Skill
@@ -14,6 +14,7 @@ Goal: use the live VS Code node as the primary execution path for ClawDrive.
 - Do not say "this session does not have VS Code capability" until you have checked live node status in the current turn.
 - Do not substitute ACP, coding-agent, generic local Codex execution, or local file reading unless the user explicitly asked for that fallback or the VS Code path has been proven unavailable.
 - Prefer the plugin's current public contract: `vscode.agent.route` for natural-language work, direct `vscode.*` commands for narrow retrieval, and `vscode.agent.task.*` only when explicit task lifecycle control is needed.
+- Respect strict provider selection. Do not assume the plugin will silently switch from `claude` to `codex`.
 
 ## Required first step
 
@@ -43,7 +44,22 @@ The current ClawDrive direct command surface is:
 - `vscode.agent.task.cancel`
 - `vscode.agent.task.result`
 
-Do not invent unsupported direct commands such as `vscode.editor.openFiles`, `vscode.git.*`, or `vscode.lang.*` unless the live node actually advertises them.
+Do not invent unsupported direct commands such as `vscode.editor.openFiles`, `vscode.git.*`, `vscode.lang.*`, or a remote `clawdrive.openInClaudeCode` unless the live node actually advertises them.
+
+## Claude split
+
+Treat these as different surfaces:
+
+- `Claude Code for VS Code`: handoff-only from the plugin side. It can open Claude and prefill a prompt, but it is not a background `vscode.agent.task.*` runtime.
+- `Claude Code CLI`: the background provider behind `provider.kind = claude`.
+
+Routing rule:
+
+- If the user says "open in Claude", "continue in Claude Code", "use Claude Code for VS Code", or otherwise asks for Claude as an IDE tab/handoff experience, prefer `vscode.agent.route` with explicit handoff wording.
+- If the user asks for a background VS Code task and the selected provider is `claude`, remember that this means `claude-cli`, not the VS Code extension.
+- Do not collapse Claude handoff and Claude background-task semantics into one path.
+- Remember that the current plugin can auto-discover the bundled Claude CLI from standard installed Claude Code for VS Code extension directories; a missing CLI error means that discovery still did not produce a runnable background executable.
+- Do not claim Claude background task support is available unless the provider is actually ready.
 
 ## Command routing
 
@@ -116,7 +132,27 @@ Write-boundary rules:
 - Do not add your own extra preflight confirmation before task start. The ClawDrive `apply` flow already pauses for `waiting_decision` and then `waiting_approval`.
 - Approval or rejection should target the current `waiting_approval` task instead of restarting work.
 
-### 5. Continue, cancel, or debug
+### 5. Claude handoff
+
+For:
+
+- "open this in Claude Code"
+- "continue in Claude"
+- "use Claude Code for VS Code"
+- "hand this off to Claude"
+
+Default route:
+
+- Prefer `vscode.agent.route` with explicit natural-language wording that asks the plugin to open Claude Code for VS Code and prefill the prompt.
+- Expect a direct-result acknowledgement rather than a task lifecycle object.
+- Tell the user that prefilled Claude prompts may still require manual send in the Claude tab.
+
+Do not do this:
+
+- Do not start `vscode.agent.task.start` just because the user mentioned Claude.
+- Do not translate a Claude handoff request into `mode="analyze"` or `mode="plan"` unless the user explicitly wants a background task and the provider is ready.
+
+### 6. Continue, cancel, or debug
 
 For:
 
@@ -127,6 +163,7 @@ For:
 - "cancel the running task"
 - "why did the latest task fail"
 - "check whether the node is connected"
+- "why is Claude not ready"
 
 Default route:
 
@@ -135,9 +172,10 @@ Default route:
 - use `vscode.agent.task.cancel` when the user explicitly wants cancellation
 - prefer continuing or responding to an existing task over starting a new one
 
-Important constraint:
+Important constraints:
 
 - Dashboard task deletion is local VS Code UI only. There is no remote `vscode.agent.task.delete` command to call from OpenClaw.
+- Provider readiness failures are not proof that the VS Code node itself is offline. Keep node health and provider readiness separate.
 
 ## Failure handling
 
@@ -148,15 +186,25 @@ When the VS Code path fails:
   - node exists but command missing
   - node invocation returned an error
   - task entered provider execution but failed during runtime or finalization
+  - provider is not ready for the selected backend
 - Include the exact command that was attempted.
 - Only then offer fallback options such as local inspection.
 - Do not silently switch to local inference when the user explicitly requested this skill.
+- Do not silently switch providers unless the user explicitly enabled or requested that behavior.
+
+For Claude-specific readiness failures:
+
+- If the error says `Claude Code CLI executable was not found`, explain that this refers to the CLI-backed provider.
+- Explain that the plugin already checks the configured path, `PATH`, and standard Claude Code for VS Code extension locations for a bundled Claude CLI.
+- If the user only intended to use the VS Code Claude extension, redirect them toward Claude handoff via `vscode.agent.route`.
+- If they intended a background task, explain that they need a runnable Claude CLI, either through normal local installation, an auto-discoverable Claude Code for VS Code bundled CLI, or an explicit `clawdrive.provider.claude.path`.
 
 ## Important split
 
 - `vscode.agent.route` is the preferred public natural-language entrypoint.
-- `vscode.agent.task.*` is the Codex task orchestration and lifecycle surface.
+- `vscode.agent.task.*` is the long-running task orchestration and lifecycle surface.
 - `vscode.agent.status` is a legacy health check and should not be used to block `vscode.agent.route` or `vscode.agent.task.*`.
+- `Claude Code for VS Code` handoff should normally come through `vscode.agent.route`, not `vscode.agent.task.*`.
 - The preferred chain is:
   OpenClaw -> VS Code node -> `vscode.agent.route` or targeted `vscode.*` / `vscode.agent.task.*`
 
@@ -176,6 +224,7 @@ When the VS Code path fails:
 - `/skill vscode-skill show the active editor`
 - `/skill vscode-skill analyze this repository and explain the main modules`
 - `/skill vscode-skill give me two implementation options but do not modify code yet`
+- `/skill vscode-skill open this in Claude Code for VS Code and continue there`
 - `/skill vscode-skill continue the latest VS Code task and use the recommended option`
 - `/skill vscode-skill debug why the latest VS Code task failed`
 

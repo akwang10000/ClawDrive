@@ -1,6 +1,7 @@
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { ClaudeVsCodeUriHandoff } from "./claude-vscode-handoff";
 import { ClawDriveActivityProvider } from "./activity-view";
 import { getConfig } from "./config";
 import { dispatchCommand, getRegisteredCommands, initializeCommandRegistry } from "./commands/registry";
@@ -36,6 +37,7 @@ class ClawDriveRuntime {
       taskService: this.taskService,
       getConnectionState: () => this.connectionState,
       getProviderStatus: () => this.taskService.getProviderStatus(),
+      claudeVsCodeHandoff: new ClaudeVsCodeUriHandoff(),
     });
     initializeCommandRegistry({
       taskService: this.taskService,
@@ -179,6 +181,13 @@ class ClawDriveRuntime {
     await runSelftest(this.routeService, this.taskService);
   }
 
+  async openInClaudeCode(): Promise<void> {
+    const response = await this.routeService.route({ prompt: "Open this workspace in Claude Code for VS Code." });
+    getOutputChannel().show(true);
+    getOutputChannel().appendLine("");
+    getOutputChannel().appendLine(response.message);
+  }
+
   getDashboardSnapshot() {
     const cfg = getConfig();
     const taskSnapshot = buildDashboardTaskSnapshot(this.taskService.listAllTasks(), 20);
@@ -246,6 +255,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
       });
     }),
+    vscode.commands.registerCommand("clawdrive.openInClaudeCode", () => runtime.openInClaudeCode()),
     vscode.commands.registerCommand("clawdrive.selftest", () => runtime.selftest()),
     vscode.commands.registerCommand("clawdrive.activity.refresh", () => runtime.getActivityProvider().refresh()),
     vscode.commands.registerCommand("clawdrive.activity.openResult", (taskId: string) => runtime.openTaskResult(taskId)),

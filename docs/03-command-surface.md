@@ -89,11 +89,12 @@ The public task contract is provider-neutral.
 
 The current implementation reality is:
 
-- provider kind: `codex`
-- runtime: local Codex CLI executable
+- provider kinds: `codex`, `claude`
+- runtimes: local Codex CLI executable and local Claude Code CLI executable
 - readiness depends on enablement, executable discovery, and runnable CLI state
+- Claude Code for VS Code handoff is separate from background task execution; it is an explicit handoff route, not a long-running task provider
 
-This is acceptable for v1 as long as the public task API does not need to change to add another provider later.
+This is acceptable for v1 as long as the public task API does not need to change to add or refine providers later.
 
 ## Not Implemented Yet
 
@@ -119,4 +120,5 @@ The current repository should be documented as:
 - honest about direct read-only coverage
 - honest about grounded inspect coverage versus provider-backed analysis
 - honest about the narrow `apply` slice and explicit approval requirement
-- honest about Codex CLI being the only implemented provider
+- honest about Codex and Claude as implemented providers
+- honest that `completed` may still be degraded when bounded local fallback is used

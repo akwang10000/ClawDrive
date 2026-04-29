@@ -27,7 +27,12 @@ export async function inspectRuntimeFlow(inspector: WorkspaceInspector): Promise
   const routeDocument = await findFirstReadable(inspector, ["src/routing/service.ts", "src/routing/service.js"]);
   const taskServiceDocument = await findFirstReadable(inspector, ["src/tasks/service.ts", "src/tasks/service.js"]);
   const providerContractDocument = await findFirstReadable(inspector, ["src/tasks/provider.ts", "src/tasks/provider.js"]);
-  const providerImplementationDocument = await findFirstReadable(inspector, ["src/tasks/codex-provider.ts", "src/tasks/codex-provider.js"]);
+  const providerImplementationDocument = await findFirstReadable(inspector, [
+    "src/tasks/claude-provider.ts",
+    "src/tasks/claude-provider.js",
+    "src/tasks/codex-provider.ts",
+    "src/tasks/codex-provider.js",
+  ]);
 
   const components = {
     extension: extensionDocument ? summarizeExtensionRuntime(extensionDocument) : null,
@@ -56,12 +61,21 @@ export async function inspectRuntimeFlow(inspector: WorkspaceInspector): Promise
 }
 
 function summarizeMainFlow(components: RuntimeFlowAuditResult["components"]): string {
+  const providerSegment = components.providerImplementation
+    ? /claude-provider/i.test(components.providerImplementation.path)
+      ? "ClaudeCliProvider"
+      : /codex-provider/i.test(components.providerImplementation.path)
+        ? "CodexCliProvider"
+        : "TaskProvider"
+    : components.providerContract
+      ? "TaskProvider"
+      : null;
   const segments = [
     "OpenClaw",
     components.registry ? "vscode.agent.route" : null,
     components.routeService ? "AgentRouteService" : null,
     components.taskService ? "TaskService" : null,
-    components.providerImplementation ? "CodexCliProvider" : components.providerContract ? "TaskProvider" : null,
+    providerSegment,
   ].filter((segment): segment is string => Boolean(segment));
   return text(
     `Main flow: ${segments.join(" -> ")}.`,

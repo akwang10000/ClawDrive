@@ -5,6 +5,7 @@
   "package.command.showStatus": "ClawDrive\uff1a\u663e\u793a\u72b6\u6001",
   "package.command.diagnose": "ClawDrive\uff1a\u8fde\u63a5\u8bca\u65ad",
   "package.command.settings": "ClawDrive\uff1a\u8bbe\u7f6e",
+  "package.command.openInClaudeCode": "ClawDrive\uff1a\u5728 Claude Code \u4e2d\u6253\u5f00",
   "package.config.title": "ClawDrive",
   "package.config.gateway.host": "ClawDrive \u7684 Gateway host\u3002",
   "package.config.gateway.port": "ClawDrive \u7684 Gateway \u7aef\u53e3\u3002",

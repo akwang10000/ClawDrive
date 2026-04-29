@@ -8,9 +8,12 @@ export interface ClawDriveConfig {
   autoConnect: boolean;
   displayName: string;
   providerEnabled: boolean;
-  providerKind: "codex";
+  providerKind: "codex" | "claude";
   providerCodexPath: string;
   providerCodexModel: string;
+  providerClaudePath: string;
+  providerClaudeModel: string;
+  providerFallbackToAlternate: boolean;
   providerPolicyLevel: "safe" | "extended" | "raw";
   providerDisableFeatures: string[];
   providerSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
@@ -34,9 +37,12 @@ export function getConfig(): ClawDriveConfig {
     autoConnect: cfg.get<boolean>("autoConnect", false),
     displayName: cfg.get<string>("displayName", "ClawDrive"),
     providerEnabled: cfg.get<boolean>("provider.enabled", false),
-    providerKind: "codex",
+    providerKind: cfg.get<"codex" | "claude">("provider.kind", "codex"),
     providerCodexPath: cfg.get<string>("provider.codex.path", "codex"),
     providerCodexModel: cfg.get<string>("provider.codex.model", ""),
+    providerClaudePath: cfg.get<string>("provider.claude.path", "claude"),
+    providerClaudeModel: cfg.get<string>("provider.claude.model", ""),
+    providerFallbackToAlternate: cfg.get<boolean>("provider.fallbackToAlternate", false),
     providerPolicyLevel: cfg.get<"safe" | "extended" | "raw">("provider.policyLevel", "safe"),
     providerDisableFeatures: Array.isArray(providerDisableFeatures)
       ? providerDisableFeatures

@@ -93,6 +93,57 @@ test("TaskService drives waiting_decision -> respond -> completed", async () => 
   assert.ok(result.events.some((event) => event.type === "completed"));
 });
 
+test("TaskService persists provider session ids from apply waiting_decision into resume", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-apply-session-resume");
+  setWorkspaceRoot(rootPath);
+
+  let resumeSessionId: string | null | undefined;
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onSessionId("session-apply-start");
+      return {
+        sessionId: "session-apply-start",
+        summary: "Choose an apply plan.",
+        output: "option_a: Update README",
+        decision: {
+          summary: "Choose an apply plan.",
+          recommendedOptionId: "option_a",
+          options: [{ id: "option_a", title: "Update README", summary: "Replace README text.", recommended: true }],
+        },
+      };
+    },
+    async resumeTask(context, response) {
+      resumeSessionId = context.sessionId;
+      assert.equal(response.optionId, "option_a");
+      return {
+        sessionId: context.sessionId,
+        summary: "Ready to apply README update.",
+        output: "write_file README.md",
+        approval: {
+          summary: "Update README.md content.",
+          operations: [{ type: "write_file", path: "README.md", content: "after" }],
+        },
+      };
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "fix the README", mode: "apply" });
+  const waitingDecision = await waitForTaskState(service, queued.taskId, "waiting_decision");
+  assert.equal(waitingDecision.providerSessionId, "session-apply-start");
+
+  await service.respondToTask({ taskId: waitingDecision.taskId, optionId: "option_a" });
+  const waitingApproval = await waitForTaskState(service, waitingDecision.taskId, "waiting_approval");
+
+  assert.equal(resumeSessionId, "session-apply-start");
+  assert.equal(waitingApproval.providerSessionId, "session-apply-start");
+});
+
 test("TaskService returns provider evidence through task.result", async () => {
   const rootPath = await makeTempDir("clawdrive-task-provider-evidence");
   setWorkspaceRoot(rootPath);
@@ -239,6 +290,100 @@ test("TaskService coalesces concurrent provider refreshes into a single probe", 
   assert.equal(right.state, "ready");
   assert.equal(probeCount, 1);
   assert.equal(createCount, 2);
+});
+
+test("TaskService falls back to codex when configured claude provider is not ready", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-provider-fallback");
+  setWorkspaceRoot(rootPath);
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ providerKind: "claude", providerFallbackToAlternate: true }),
+    createProvider: (config) => {
+      if (config.providerKind === "claude") {
+        return new FakeProvider({
+          async probe() {
+            return {
+              ready: false,
+              state: "missing",
+              detail: "Claude Code executable was not found. Check clawdrive.provider.claude.path and local installation.",
+            };
+          },
+          async startTask() {
+            throw new Error("not used");
+          },
+          async resumeTask() {
+            throw new Error("not used");
+          },
+        });
+      }
+      return {
+        kind: "codex",
+        async probe() {
+          return { ready: true, state: "ready", detail: "Using codex." };
+        },
+        async startTask() {
+          return {
+            summary: "Fallback provider completed.",
+            output: "Fallback analysis.",
+          };
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      } satisfies TaskProvider;
+    },
+  });
+
+  await service.initialize();
+  const providerStatus = service.getProviderStatus();
+  assert.equal(providerStatus.ready, true);
+  assert.equal(providerStatus.label, "Ready (Codex CLI)");
+  assert.match(providerStatus.detail, /Configured Claude Code CLI is unavailable/i);
+
+  const queued = await service.startTask({ prompt: "Explain the repository.", mode: "analyze" });
+  const completed = await waitForTaskState(service, queued.taskId, "completed");
+  assert.equal(completed.providerKind, "codex");
+  assert.equal(completed.resultSummary, "Fallback provider completed.");
+});
+
+test("TaskService allows task start after an inconclusive Claude probe", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-inconclusive-probe");
+  setWorkspaceRoot(rootPath);
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ providerKind: "claude", providerFallbackToAlternate: false }),
+    createProvider: () => ({
+      kind: "claude",
+      async probe() {
+        return {
+          ready: true,
+          state: "ready",
+          detail:
+            "Using claude. Probe was inconclusive: Claude Code stalled after turn start without producing a usable result. Tasks will validate runtime readiness on execution.",
+        };
+      },
+      async startTask() {
+        return {
+          summary: "Plan completed.",
+          output: "Runtime task execution still works.",
+        };
+      },
+      async resumeTask() {
+        throw new Error("not used");
+      },
+    } satisfies TaskProvider),
+  });
+
+  await service.initialize();
+  const providerStatus = service.getProviderStatus();
+  assert.equal(providerStatus.ready, true);
+  assert.equal(providerStatus.state, "ready");
+  assert.match(providerStatus.detail, /probe was inconclusive/i);
+
+  const queued = await service.startTask({ prompt: "Explain the repository.", mode: "analyze" });
+  const completed = await waitForTaskState(service, queued.taskId, "completed");
+  assert.equal(completed.errorCode, null);
+  assert.equal(completed.resultSummary, "Plan completed.");
 });
 
 test("TaskService restore converts running tasks to interrupted", async () => {
@@ -972,6 +1117,537 @@ test("TaskService preserves fatal runtime signals when the provider fails", asyn
   assert.equal(failed.executionHealth, "failed");
   assert.equal(failed.errorCode, "PROVIDER_AUTH_FAILED");
   assert.equal(failed.runtimeSignals[0].severity, "fatal");
+});
+
+
+test("TaskService uses readonly fallback for empty provider output during simple plan tasks", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-empty-output-fallback-simple-plan");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider: TaskProvider = {
+    kind: "claude",
+    async probe() {
+      return { ready: true, state: "ready", detail: "ok" };
+    },
+    async startTask(_context, callbacks) {
+      callbacks.onProgress("Claude task turn started.");
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalizationPath: "none",
+        stdoutEventTail: ["turn.started"],
+      });
+      throw Object.assign(new Error("Claude returned an empty result payload."), { code: "TASK_FAILED" });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  };
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ providerKind: "claude" }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({
+    prompt: "Give me two safe next-step options for investigating this workspace. Do not modify anything.",
+    mode: "plan",
+  });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision", 5_000);
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.equal(waiting.errorCode, null);
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+  assert.match(waiting.resultSummary ?? "", /bounded local read-only plan|受限的只读计划/i);
+});
+
+test("TaskService uses readonly fallback for empty provider output during plan tasks", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-empty-output-fallback");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider: TaskProvider = {
+    kind: "claude",
+    async probe() {
+      return { ready: true, state: "ready", detail: "ok" };
+    },
+    async startTask(_context, callbacks) {
+      callbacks.onProgress("Claude task turn started.");
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalizationPath: "none",
+        stdoutEventTail: ["thread.started", "turn.started"],
+      });
+      throw Object.assign(new Error("Claude returned an empty result payload."), { code: "TASK_FAILED" });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  };
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ providerKind: "claude" }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({
+    prompt:
+      "Analyze the current workspace and return a structured report with repository purpose, top-level module breakdown, likely entry points, task pipeline locations, and a recommended file-reading order for debugging the VS Code task pipeline. Do not modify files.",
+    mode: "plan",
+  });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision", 5_000);
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.equal(waiting.errorCode, null);
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+  assert.match(waiting.resultSummary ?? "", /bounded local read-only plan|受限的只读计划/i);
+});
+
+test("TaskService marks readonly fallback results as degraded completed work with explicit fallback evidence", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-readonly-fallback-evidence");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider: TaskProvider = {
+    kind: "claude",
+    async probe() {
+      return { ready: true, state: "ready", detail: "ok" };
+    },
+    async startTask(_context, callbacks) {
+      callbacks.onProgress("Claude task turn started.");
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalizationPath: "timeout",
+        finalMessageSource: "none",
+        stdoutEventTail: ["turn.started"],
+      });
+      throw Object.assign(new Error("Claude returned an empty result payload."), { code: "PROVIDER_OUTPUT_EMPTY" });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  };
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ providerKind: "claude" }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({
+    prompt:
+      "Analyze the current workspace and return a structured report with repository purpose, top-level module breakdown, likely entry points, task pipeline locations, and a recommended file-reading order for debugging the VS Code task pipeline. Do not modify files.",
+    mode: "analyze",
+  });
+  const completed = await waitForTaskState(service, queued.taskId, "completed", 5_000);
+
+  assert.equal(completed.executionHealth, "degraded");
+  assert.equal(completed.errorCode, null);
+  assert.ok(completed.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+  assert.equal(completed.providerEvidence?.sawTurnStarted, true);
+  assert.equal(completed.providerEvidence?.finalizationPath, "timeout");
+  assert.equal(completed.providerEvidence?.finalMessageSource, "none");
+  assert.match(completed.resultSummary ?? "", /bounded local workspace analysis|受限的本地工作区分析/i);
+});
+
+test("TaskService keeps completed health clean after a transient stall warning when provider finalizes successfully", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-runtime-stall-recovered");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onProgress("Claude task turn started.");
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_RESULT_STALL_WARNING",
+          severity: "degraded",
+          summary: "Provider task is still running but has not produced usable output for a while.",
+          detail: "No provider output after turn start for 10s.",
+        },
+        "No provider output after turn start for 10s."
+      );
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: true,
+        finalMessageSource: "direct_message",
+        finalizationPath: "stream_capture",
+        stdoutEventTail: ["turn.started", "result.received", "turn.completed"],
+      });
+      return {
+        summary: "Analysis completed.",
+        output: "Provider-backed final answer.",
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Explain the repo.", mode: "analyze" });
+  const completed = await waitForTaskState(service, queued.taskId, "completed");
+
+  assert.equal(completed.executionHealth, "clean");
+  assert.ok(completed.runtimeSignals.some((signal) => signal.code === "PROVIDER_RESULT_STALL_WARNING"));
+  assert.equal(completed.providerEvidence?.sawTurnCompleted, true);
+  assert.equal(completed.providerEvidence?.finalMessageSource, "direct_message");
+});
+
+test("TaskService keeps completed health degraded when fallback completes after a stall warning", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-runtime-stall-fallback");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider: TaskProvider = {
+    kind: "claude",
+    async probe() {
+      return { ready: true, state: "ready", detail: "ok" };
+    },
+    async startTask(_context, callbacks) {
+      callbacks.onProgress("Claude task turn started.");
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_RESULT_STALL_WARNING",
+          severity: "degraded",
+          summary: "Provider task is still running but has not produced usable output for a while.",
+          detail: "No provider output after turn start for 10s.",
+        },
+        "No provider output after turn start for 10s."
+      );
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: false,
+        finalMessageSource: "none",
+        finalizationPath: "timeout",
+        stdoutEventTail: ["turn.started"],
+      });
+      throw Object.assign(new Error("Claude returned an empty result payload."), { code: "PROVIDER_OUTPUT_EMPTY" });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  };
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ providerKind: "claude" }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Explain the repo.", mode: "analyze" });
+  const completed = await waitForTaskState(service, queued.taskId, "completed", 5_000);
+
+  assert.equal(completed.executionHealth, "degraded");
+  assert.ok(completed.runtimeSignals.some((signal) => signal.code === "PROVIDER_RESULT_STALL_WARNING"));
+  assert.ok(completed.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+});
+
+test("TaskService does not use readonly fallback for provider auth failures", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-auth-no-fallback");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_AUTH_FAILED",
+          severity: "fatal",
+          summary: "Provider authentication failed while contacting the upstream model service.",
+          detail: "No authentication found",
+        },
+        "No authentication found"
+      );
+      throw Object.assign(new Error("No authentication found"), { code: "PROVIDER_AUTH_FAILED" });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Plan the next step.", mode: "plan" });
+  const failed = await waitForTaskState(service, queued.taskId, "failed", 5_000);
+
+  assert.equal(failed.errorCode, "PROVIDER_AUTH_FAILED");
+  assert.ok(!failed.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+});
+
+test("TaskService does not use readonly fallback for invalid Claude model failures", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-model-no-fallback");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_MODEL_INVALID",
+          severity: "fatal",
+          summary: "Provider model configuration is invalid or unavailable.",
+          detail: "invalid model: bad-model",
+        },
+        "invalid model: bad-model"
+      );
+      throw Object.assign(new Error("invalid model: bad-model"), { code: "PROVIDER_MODEL_INVALID" });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Plan the next step.", mode: "plan" });
+  const failed = await waitForTaskState(service, queued.taskId, "failed", 5_000);
+
+  assert.equal(failed.errorCode, "PROVIDER_MODEL_INVALID");
+  assert.ok(!failed.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+});
+
+
+
+test("TaskService uses bounded readonly decision fallback for Claude apply StructuredOutput compatibility failures", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-apply-structuredoutput-fallback");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider: TaskProvider = {
+    kind: "claude",
+    async probe() {
+      return { ready: true, state: "ready", detail: "ok" };
+    },
+    async startTask(_context, callbacks) {
+      callbacks.onProgress("Claude task turn started.");
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: true,
+        finalizationPath: "stream_capture",
+        finalMessageSource: "direct_message",
+        lastAgentMessagePreview:
+          "API Error: 400 {\"error\":{\"message\":\"litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"Invalid schema for function 'StructuredOutput': schema must be a JSON Schema of 'type: \\\\\\\"object\\\\\\\"', got 'type: \\\\\\\"None\\\\\\\"'.\\\"}}\"}}",
+        stdoutEventTail: ["turn.started", "result.received", "turn.completed"],
+      });
+      throw Object.assign(
+        new Error("Claude Code returned output that could not be parsed as the expected JSON result."),
+        { code: "PROVIDER_OUTPUT_INVALID" }
+      );
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  };
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ providerKind: "claude" }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({
+    prompt: "First produce a minimal change proposal for approval, then wait for confirmation before applying it.",
+    mode: "apply",
+  });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision", 5_000);
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.equal(waiting.errorCode, null);
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+  assert.ok((waiting.decision?.options.length ?? 0) >= 2);
+  assert.match(waiting.resultSummary ?? "", /change-review decision|变更审核决策/i);
+  assert.match(waiting.lastOutput ?? "", /Fallback Note|降级说明/i);
+  assert.match(waiting.providerEvidence?.lastAgentMessagePreview ?? "", /StructuredOutput|type: \\\"None\\\"/i);
+});
+
+
+test("TaskService uses minimal apply readonly fallback when workspace inspection cannot build one", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-apply-minimal-fallback");
+  setWorkspaceRoot(rootPath);
+
+  const provider: TaskProvider = {
+    kind: "claude",
+    async probe() {
+      return { ready: true, state: "ready", detail: "ok" };
+    },
+    async startTask(_context, callbacks) {
+      callbacks.onProgress("Claude task turn started.");
+      callbacks.onEvidence({
+        sawTurnStarted: true,
+        sawTurnCompleted: true,
+        finalizationPath: "stream_capture",
+        finalMessageSource: "direct_message",
+        lastAgentMessagePreview:
+          "API Error: 400 {\"error\":{\"message\":\"litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"Invalid schema for function 'StructuredOutput': schema must be a JSON Schema of 'type: \\\\\\\"object\\\\\\\"', got 'type: \\\\\\\"None\\\\\\\"'.\\\"}}\"}}",
+        stdoutEventTail: ["turn.started", "result.received", "turn.completed"],
+      });
+      throw Object.assign(
+        new Error("Claude Code returned output that could not be parsed as the expected JSON result."),
+        { code: "PROVIDER_OUTPUT_INVALID" }
+      );
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  };
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig({ providerKind: "claude" }),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({
+    prompt: "First produce a minimal change proposal for approval, then wait for confirmation before applying it.",
+    mode: "apply",
+  });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision", 5_000);
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.equal(waiting.errorCode, null);
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+  assert.equal(waiting.decision?.recommendedOptionId, "option_apply_runtime_review");
+  assert.match(waiting.resultSummary ?? "", /read-only change-review decision/i);
+  assert.match(waiting.lastOutput ?? "", /Fallback Note/i);
+});
+
+test("TaskService does not use readonly fallback for MCP compatibility failures", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-mcp-no-fallback");
+  setWorkspaceRoot(rootPath);
+  await seedReadonlyFallbackWorkspace(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_MCP_COMPATIBILITY_FAILED",
+          severity: "fatal",
+          summary: "Provider MCP compatibility failed while fetching tools or invoking methods.",
+          detail: 'MCP server "claude-vscode" Failed to fetch tools: MCP error -32601: Method not found',
+        },
+        'MCP server "claude-vscode" Failed to fetch tools: MCP error -32601: Method not found'
+      );
+      throw Object.assign(new Error('MCP server "claude-vscode" Failed to fetch tools: MCP error -32601: Method not found'), {
+        code: "PROVIDER_MCP_COMPATIBILITY_FAILED",
+      });
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Plan the next step.", mode: "plan" });
+  const failed = await waitForTaskState(service, queued.taskId, "failed", 5_000);
+
+  assert.equal(failed.errorCode, "PROVIDER_MCP_COMPATIBILITY_FAILED");
+  assert.ok(!failed.runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK"));
+});
+
+test("TaskService keeps waiting_decision degraded when a plan result only arrives after retry", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-plan-retry-degraded");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask(_context, callbacks) {
+      callbacks.onRuntimeSignal(
+        {
+          code: "PROVIDER_PLAN_OUTPUT_RETRY",
+          severity: "degraded",
+          summary: "Claude plan task returned empty output; retried once with explicit raw JSON prompting.",
+          detail: "Claude Code finished without returning a final message.",
+        },
+        "Claude Code finished without returning a final message."
+      );
+      return {
+        summary: "Choose an investigation path.",
+        output: "option_a: Trace provider finalization - Start in claude-provider.ts.\noption_b: Audit fallback semantics - Start in service.ts.",
+        decision: {
+          summary: "Choose an investigation path.",
+          recommendedOptionId: "option_a",
+          options: [
+            { id: "option_a", title: "Trace provider finalization", summary: "Start in claude-provider.ts.", recommended: true },
+            { id: "option_b", title: "Audit fallback semantics", summary: "Start in service.ts.", recommended: false },
+          ],
+        },
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Give me two next-step options.", mode: "plan" });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision");
+
+  assert.equal(waiting.executionHealth, "degraded");
+  assert.ok(waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_PLAN_OUTPUT_RETRY"));
+});
+
+test("TaskService keeps waiting_decision clean when a plan result is available without retry", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-plan-clean");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask() {
+      return {
+        summary: "Choose an investigation path.",
+        output: "option_a: Trace provider finalization - Start in claude-provider.ts.\noption_b: Audit fallback semantics - Start in service.ts.",
+        decision: {
+          summary: "Choose an investigation path.",
+          recommendedOptionId: "option_a",
+          options: [
+            { id: "option_a", title: "Trace provider finalization", summary: "Start in claude-provider.ts.", recommended: true },
+            { id: "option_b", title: "Audit fallback semantics", summary: "Start in service.ts.", recommended: false },
+          ],
+        },
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "Give me two next-step options.", mode: "plan" });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision");
+
+  assert.equal(waiting.executionHealth, "clean");
+  assert.ok(!waiting.runtimeSignals.some((signal) => signal.code === "PROVIDER_PLAN_OUTPUT_RETRY"));
 });
 
 test("TaskService shows degraded running health when the provider emits a stall warning before timeout", async () => {

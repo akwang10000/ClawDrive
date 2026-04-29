@@ -5,6 +5,8 @@ import { commandFailure } from "../guards/errors";
 import { resolveContainedPath } from "../guards/workspace-access";
 import { log } from "../logger";
 import { StructuredApplyExecutor } from "./apply-executor";
+import { classifyClaudeCliFailure } from "./claude-cli";
+import { ClaudeCliProvider } from "./claude-provider";
 import { classifyCodexCliFailure } from "./codex-cli";
 import { CodexCliProvider } from "./codex-provider";
 import type { ProviderProbeResult, TaskProvider } from "./provider";
@@ -91,7 +93,9 @@ export class TaskService implements vscode.Disposable {
   ) {
     this.options = {
       getConfig: options?.getConfig ?? getConfig,
-      createProvider: options?.createProvider ?? ((config) => new CodexCliProvider(config)),
+      createProvider:
+        options?.createProvider ??
+        ((config) => (config.providerKind === "claude" ? new ClaudeCliProvider(config) : new CodexCliProvider(config))),
       createApplyExecutor: options?.createApplyExecutor ?? (() => new StructuredApplyExecutor()),
       createStorage: options?.createStorage ?? ((rootPath, historyLimit) => new TaskStorage(rootPath, historyLimit)),
       getWorkspacePath: options?.getWorkspacePath ?? (() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null),
@@ -151,10 +155,12 @@ export class TaskService implements vscode.Disposable {
     }
 
     this.providerRefreshPromise = (async () => {
-      this.storage = this.createStorage(this.options.getConfig().tasksHistoryLimit);
+      const config = this.options.getConfig();
+      this.storage = this.createStorage(config.tasksHistoryLimit);
       await this.storage.initialize();
-      this.provider = this.createProvider();
-      this.providerStatus = this.mapProbeToStatus(await this.provider.probe());
+      const resolved = await this.resolveActiveProvider(config);
+      this.provider = resolved.provider;
+      this.providerStatus = this.mapProbeToStatus(resolved.probe);
       this.emitter.fire();
       return this.providerStatus;
     })();
@@ -594,6 +600,22 @@ export class TaskService implements vscode.Disposable {
               ? error.code
               : "TASK_FAILED";
         const failure = this.normalizeFailedTaskOutcome(snapshot, rawCode, rawMessage);
+        const isApplyStructuredOutputCompatibilityFailure =
+          this.maybeIsClaudeApplyStructuredOutputCompatibilityFailure(snapshot, failure.code, failure.message);
+        if (isApplyStructuredOutputCompatibilityFailure) {
+          await this.persistRuntimeSignal(
+            snapshot,
+            {
+              code: "PROVIDER_LOCAL_READONLY_FALLBACK",
+              severity: "degraded",
+              summary: "Provider did not finish cleanly; completed with bounded local workspace analysis.",
+              detail: `${failure.code}: ${failure.message}`,
+            },
+            `${failure.code}: ${failure.message}`
+          );
+          await this.applyRunResult(snapshot, this.buildMinimalApplyReadonlyFallback(failure.message));
+          return;
+        }
         const fallback = await this.maybeBuildReadonlyFallback(snapshot, workspacePath, failure.code, failure.message);
         if (fallback) {
           await this.persistRuntimeSignal(
@@ -658,7 +680,7 @@ export class TaskService implements vscode.Disposable {
         snapshot.approval = null;
       }
       snapshot.summary = result.summary;
-      snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "completed");
+      snapshot.executionHealth = this.deriveCompletedExecutionHealth(snapshot.runtimeSignals, snapshot.providerEvidence);
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "completed", snapshot.summary);
     }
@@ -776,7 +798,14 @@ export class TaskService implements vscode.Disposable {
       return { ready: false, state: "disabled", ...providerStatusDisabled() };
     }
     if (probe.state === "ready") {
-      return { ready: true, state: "ready", ...providerStatusReady("Codex CLI") };
+      const base = providerStatusReady(this.provider.kind === "claude" ? "Claude Code CLI" : "Codex CLI");
+      return {
+        ready: true,
+        state: "ready",
+        label: base.label,
+        message: base.message,
+        detail: probe.detail || base.detail,
+      };
     }
     if (probe.state === "missing") {
       return { ready: false, state: "missing", ...providerStatusMissing(probe.detail) };
@@ -786,6 +815,35 @@ export class TaskService implements vscode.Disposable {
 
   private createProvider(): TaskProvider {
     return this.options.createProvider(this.options.getConfig());
+  }
+
+  private createProviderForKind(config: ReturnType<typeof getConfig>, providerKind: "codex" | "claude"): TaskProvider {
+    return this.options.createProvider({ ...config, providerKind });
+  }
+
+  private async resolveActiveProvider(
+    config: ReturnType<typeof getConfig>
+  ): Promise<{ provider: TaskProvider; probe: ProviderProbeResult }> {
+    const selectedProvider = this.createProviderForKind(config, config.providerKind);
+    const selectedProbe = await selectedProvider.probe();
+    if (!config.providerEnabled || selectedProbe.ready || selectedProbe.state === "disabled" || !config.providerFallbackToAlternate) {
+      return { provider: selectedProvider, probe: selectedProbe };
+    }
+
+    const alternateKind = config.providerKind === "claude" ? "codex" : "claude";
+    const fallbackProvider = this.createProviderForKind(config, alternateKind);
+    const fallbackProbe = await fallbackProvider.probe();
+    if (!fallbackProbe.ready) {
+      return { provider: selectedProvider, probe: selectedProbe };
+    }
+
+    return {
+      provider: fallbackProvider,
+      probe: {
+        ...fallbackProbe,
+        detail: `Configured ${this.providerKindLabel(config.providerKind)} is unavailable (${selectedProbe.detail}). Falling back to ${this.providerKindLabel(alternateKind)}. ${fallbackProbe.detail}`,
+      },
+    };
   }
 
   private createStorage(historyLimit: number): TaskStorage {
@@ -873,15 +931,34 @@ export class TaskService implements vscode.Disposable {
     code: string,
     message: string
   ): { code: string; message: string } {
-    const transportSignal = this.findLatestTransportSignal(snapshot.runtimeSignals);
     if (
-      !transportSignal ||
-      !["PROVIDER_TURN_STALLED", "PROVIDER_RESULT_STALLED", "PROVIDER_EXECUTION_FAILED", "TASK_FAILED"].includes(code)
+      ["PROVIDER_AUTH_FAILED", "PROVIDER_MODEL_INVALID", "PROVIDER_MCP_COMPATIBILITY_FAILED"].includes(code)
     ) {
       return { code, message };
     }
 
-    const classified = classifyCodexCliFailure(new Error(transportSignal.detail ?? transportSignal.summary));
+    if (["PROVIDER_EXECUTION_FAILED", "TASK_FAILED"].includes(code)) {
+      const classified = this.classifyProviderFailure(snapshot.providerKind, new Error(message));
+      if (classified.code !== "PROVIDER_EXECUTION_FAILED") {
+        return classified;
+      }
+    }
+
+    const transportSignal = this.findLatestTransportSignal(snapshot.runtimeSignals);
+    if (
+      !transportSignal ||
+      ![
+        "PROVIDER_TURN_STALLED",
+        "PROVIDER_RESULT_STALLED",
+        "PROVIDER_EXECUTION_FAILED",
+        "TASK_FAILED",
+        "provider_transport_watchdog",
+      ].includes(code)
+    ) {
+      return { code, message };
+    }
+
+    const classified = this.classifyProviderFailure(snapshot.providerKind, new Error(transportSignal.detail ?? transportSignal.summary));
     if (classified.code === "PROVIDER_TRANSPORT_FAILED") {
       return classified;
     }
@@ -891,17 +968,48 @@ export class TaskService implements vscode.Disposable {
     };
   }
 
+  private maybeIsClaudeApplyStructuredOutputCompatibilityFailure(
+    snapshot: TaskSnapshot,
+    code: string,
+    message: string
+  ): boolean {
+    if (snapshot.mode !== "apply" || snapshot.providerKind !== "claude" || code !== "PROVIDER_OUTPUT_INVALID") {
+      return false;
+    }
+    const combined = [message, snapshot.providerEvidence?.lastAgentMessagePreview ?? ""].join("\n");
+    const normalized = combined.replace(/\\+"/g, '"').replace(/\\+'/g, "'").toLowerCase();
+    return (
+      /invalid schema for function/i.test(normalized) &&
+      (normalized.includes("structuredoutput") || normalized.includes("structured output")) &&
+      normalized.includes("json schema") &&
+      normalized.includes("type:") &&
+      normalized.includes("none")
+    );
+  }
+
   private async maybeBuildReadonlyFallback(
     snapshot: TaskSnapshot,
     workspacePath: string | null,
     code: string,
     message: string
   ): Promise<TaskRunResult | null> {
+    const isApplyStructuredOutputCompatibilityFailure = this.maybeIsClaudeApplyStructuredOutputCompatibilityFailure(
+      snapshot,
+      code,
+      message
+    );
+
     if (
-      snapshot.mode === "apply" ||
-      !["PROVIDER_TRANSPORT_FAILED", "PROVIDER_TURN_STALLED", "PROVIDER_RESULT_STALLED", "PROVIDER_FINALIZATION_STALLED"].includes(
-        code
-      ) ||
+      (!isApplyStructuredOutputCompatibilityFailure && snapshot.mode === "apply") ||
+      ["PROVIDER_AUTH_FAILED", "PROVIDER_MODEL_INVALID", "PROVIDER_MCP_COMPATIBILITY_FAILED"].includes(code) ||
+      (!isApplyStructuredOutputCompatibilityFailure &&
+        ![
+          "PROVIDER_TRANSPORT_FAILED",
+          "PROVIDER_TURN_STALLED",
+          "PROVIDER_RESULT_STALLED",
+          "PROVIDER_FINALIZATION_STALLED",
+          "PROVIDER_OUTPUT_EMPTY",
+        ].includes(code)) ||
       !shouldAttemptReadonlyTaskFallback({
         mode: snapshot.mode,
         prompt: snapshot.prompt,
@@ -918,15 +1026,54 @@ export class TaskService implements vscode.Disposable {
       paths: snapshot.paths,
       workspacePath,
     });
-    if (!fallback) {
+    const resolvedFallback = fallback ?? (isApplyStructuredOutputCompatibilityFailure ? this.buildMinimalApplyReadonlyFallback(message) : null);
+    if (!resolvedFallback) {
       return null;
     }
 
-    fallback.summary =
+    resolvedFallback.providerEvidence = this.mergeProviderEvidence(snapshot.providerEvidence, {
+      finalizationPath: snapshot.providerEvidence?.finalizationPath ?? "timeout",
+      finalMessageSource: resolvedFallback.providerEvidence?.finalMessageSource ?? snapshot.providerEvidence?.finalMessageSource ?? "none",
+      lastAgentMessagePreview:
+        resolvedFallback.providerEvidence?.lastAgentMessagePreview ?? snapshot.providerEvidence?.lastAgentMessagePreview ?? null,
+      stdoutEventTail: resolvedFallback.providerEvidence?.stdoutEventTail ?? snapshot.providerEvidence?.stdoutEventTail ?? [],
+    });
+
+    resolvedFallback.summary =
       snapshot.mode === "plan"
-        ? fallback.summary
-        : `${fallback.summary}${message ? ` (${message})` : ""}`;
-    return fallback;
+        ? resolvedFallback.summary
+        : `${resolvedFallback.summary}${message ? ` (${message})` : ""}`;
+    return resolvedFallback;
+  }
+
+  private buildMinimalApplyReadonlyFallback(message?: string): TaskRunResult {
+    const summary =
+      "Provider apply mode was incompatible in this environment, so I prepared a bounded read-only change-review decision first.";
+    return {
+      summary: `${summary}${message ? ` (${message})` : ""}`,
+      output:
+        "Fallback Note\nProvider apply mode was incompatible in this environment, so a minimal bounded read-only change-review decision was prepared without repository-specific inspection.",
+      decision: {
+        summary,
+        recommendedOptionId: "option_apply_runtime_review",
+        options: [
+          {
+            id: "option_apply_runtime_review",
+            title: "Review Runtime Path First",
+            summary:
+              "Review the extension entry, routing, task service, and provider files first, then prepare the smallest safe code change proposal before applying anything.",
+            recommended: true,
+          },
+          {
+            id: "option_apply_target_review",
+            title: "Inspect Target Files First",
+            summary:
+              "Inspect the likely target files first, then convert the findings into a minimal change proposal.",
+            recommended: false,
+          },
+        ],
+      },
+    };
   }
 
   private findLatestTransportSignal(runtimeSignals: TaskRuntimeSignal[]): TaskRuntimeSignal | null {
@@ -974,8 +1121,40 @@ export class TaskService implements vscode.Disposable {
       finalizationPath: incoming.finalizationPath ?? existing?.finalizationPath ?? "none",
       lastAgentMessagePreview:
         incoming.lastAgentMessagePreview ?? existing?.lastAgentMessagePreview ?? null,
+      rawStdoutPreview: incoming.rawStdoutPreview ?? existing?.rawStdoutPreview ?? null,
       stdoutEventTail: incoming.stdoutEventTail ?? existing?.stdoutEventTail ?? [],
     };
+  }
+
+  private deriveCompletedExecutionHealth(
+    runtimeSignals: TaskRuntimeSignal[],
+    providerEvidence: TaskProviderEvidence | null
+  ): TaskExecutionHealth {
+    if (!this.shouldDiscountTransientStallWarning(runtimeSignals, providerEvidence)) {
+      return this.deriveExecutionHealth(runtimeSignals, "completed");
+    }
+    const filteredSignals = runtimeSignals.filter((signal) => signal.code !== "PROVIDER_RESULT_STALL_WARNING");
+    return this.deriveExecutionHealth(filteredSignals, "completed");
+  }
+
+  private shouldDiscountTransientStallWarning(
+    runtimeSignals: TaskRuntimeSignal[],
+    providerEvidence: TaskProviderEvidence | null
+  ): boolean {
+    if (!providerEvidence?.sawTurnCompleted || providerEvidence.finalMessageSource === "none") {
+      return false;
+    }
+    if (!runtimeSignals.some((signal) => signal.code === "PROVIDER_RESULT_STALL_WARNING")) {
+      return false;
+    }
+    if (runtimeSignals.some((signal) => signal.code === "PROVIDER_LOCAL_READONLY_FALLBACK")) {
+      return false;
+    }
+    return !runtimeSignals.some(
+      (signal) =>
+        signal.code !== "PROVIDER_RESULT_STALL_WARNING" &&
+        (signal.severity === "degraded" || signal.severity === "fatal")
+    );
   }
 
   private deriveExecutionHealth(
@@ -1002,8 +1181,15 @@ export class TaskService implements vscode.Disposable {
       return null;
     }
     const detail = rawDetail ?? signal.detail ?? signal.summary;
-    const classified = classifyCodexCliFailure(new Error(detail));
+    const classified = this.classifyProviderFailure(this.provider.kind, new Error(detail));
     return classified.code === "PROVIDER_TRANSPORT_FAILED" ? detail : null;
+  }
+
+  private classifyProviderFailure(providerKind: string, error: unknown): { code: string; message: string } {
+    if (providerKind === "claude") {
+      return classifyClaudeCliFailure(error);
+    }
+    return classifyCodexCliFailure(error);
   }
 
   private shouldAbortForHardTransportWatchdog(snapshot: TaskSnapshot): boolean {
@@ -1016,5 +1202,9 @@ export class TaskService implements vscode.Disposable {
   private getHardTransportWatchdogMs(): number {
     const base = Math.floor(this.options.getConfig().tasksDefaultTimeoutMs / 40) || 0;
     return Math.max(4_000, Math.min(8_000, base));
+  }
+
+  private providerKindLabel(providerKind: string): string {
+    return providerKind === "claude" ? "Claude Code CLI" : "Codex CLI";
   }
 }

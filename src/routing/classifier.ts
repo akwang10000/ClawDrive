@@ -1,6 +1,7 @@
 import type { TaskContinuationCandidate } from "../tasks/types";
 
 export type RouteIntent =
+  | { type: "claude_vscode" }
   | { type: "continue" }
   | { type: "plan" }
   | { type: "apply" }
@@ -23,6 +24,9 @@ export type InspectAction =
   | { type: "extension_audit" };
 
 export function classifyIntent(prompt: string, paths: string[]): RouteIntent {
+  if (matchesAny(prompt, claudeVsCodePatterns)) {
+    return { type: "claude_vscode" };
+  }
   if (matchesAny(prompt, continuePatterns) || matchesAny(prompt, approvalPatterns) || matchesAny(prompt, rejectionPatterns)) {
     return { type: "continue" };
   }
@@ -192,6 +196,14 @@ const continuePatterns = [
   /\u6309\u63a8\u8350\u65b9\u6848/,
 ];
 
+const claudeVsCodePatterns = [
+  /\b(open|send|handoff|hand off|continue|move)\b.*\b(claude code(?: for vs code)?|claude for vs code|claude-vscode)\b/i,
+  /\b(claude code(?: for vs code)?|claude for vs code|claude-vscode)\b.*\b(open|continue|handle|review|analy[sz]e|plan)\b/i,
+  /\u5728\s*claude(?:\s*code)?(?:\s*for\s*vs\s*code)?\s*.*(\u6253\u5f00|\u7ee7\u7eed|\u5904\u7406|\u5206\u6790|\u89c4\u5212)/i,
+  /\u7528\s*claude(?:\s*code)?(?:\s*for\s*vs\s*code)?\s*(\u6253\u5f00|\u7ee7\u7eed|\u5904\u7406|\u5206\u6790|\u89c4\u5212)/i,
+  /\u8f6c\u7ed9\s*claude(?:\s*code)?(?:\s*for\s*vs\s*code)?/i,
+];
+
 const recommendedPatterns = [/\brecommended\b/i, /\u63a8\u8350/];
 
 const approvalPatterns = [
@@ -212,7 +224,13 @@ const rejectionPatterns = [
 ];
 
 const planPatterns = [
-  /\b(plan first|give me (two|2|three|3|several)?\s*options?|trade-?offs?|let me decide)\b/i,
+  /\b(plan first|trade-?offs\?|let me decide)\b/i,
+  /\bgive me\s+(?:two|2|three|3|several)\b[\w\s-]{0,48}\boptions?\b/i,
+  /\b(?:safe|feasible|meaningful)\b[\w\s-]{0,24}\boptions?\b/i,
+  /\bnext-?step\s+options?\b/i,
+  /\bimplementation\s+options?\b/i,
+  /\bwhat are (?:the\s+)?options\b/i,
+  /\bcompare\b[\w\s-]{0,32}\boptions\b/i,
   /\u6211\u6765\u51b3\u5b9a/,
   /\u7ed9\u6211.*\u65b9\u6848/,
   /\u51e0\u4e2a\u65b9\u6848/,

@@ -5,6 +5,7 @@
   "package.command.showStatus": "ClawDrive: Show Status",
   "package.command.diagnose": "ClawDrive: Diagnose Connection",
   "package.command.settings": "ClawDrive: Settings",
+  "package.command.openInClaudeCode": "ClawDrive: Open in Claude Code",
   "package.config.title": "ClawDrive",
   "package.config.gateway.host": "Gateway host for ClawDrive.",
   "package.config.gateway.port": "Gateway port for ClawDrive.",

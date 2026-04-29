@@ -176,7 +176,8 @@ Architecture target:
 
 Current reality:
 
-- Codex CLI is the only implemented provider
+- Codex CLI and Claude Code CLI are implemented providers
+- Claude Code for VS Code handoff is a separate explicit route, not a background task provider
 
 That is acceptable as long as the public task contract does not need redesign to add more providers later.
 
@@ -187,3 +188,10 @@ The current provider runtime model also distinguishes between:
 - fatal execution failure
 
 Those runtime signals are surfaced through task results and diagnosis without changing the core task lifecycle.
+
+A task may therefore be:
+
+- `completed` with `clean` health because the provider finished normally
+- `completed` with `degraded` health because provider execution degraded and ClawDrive completed via bounded local fallback
+- `failed` when the provider failure is terminal and no bounded completion path is allowed
+

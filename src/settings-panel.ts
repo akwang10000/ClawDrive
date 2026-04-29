@@ -10,8 +10,12 @@ interface SettingsData {
   autoConnect: boolean;
   displayName: string;
   providerEnabled: boolean;
+  providerKind: "codex" | "claude";
   providerCodexPath: string;
   providerCodexModel: string;
+  providerClaudePath: string;
+  providerClaudeModel: string;
+  providerFallbackToAlternate: boolean;
   providerPolicyLevel: "safe" | "extended" | "raw";
   providerDisableFeatures: string[];
   providerSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
@@ -39,8 +43,12 @@ export function showSettingsPanel(handlers: SettingsPanelHandlers): void {
         autoConnect: cfg.autoConnect,
         displayName: cfg.displayName,
         providerEnabled: cfg.providerEnabled,
+        providerKind: cfg.providerKind,
         providerCodexPath: cfg.providerCodexPath,
         providerCodexModel: cfg.providerCodexModel,
+        providerClaudePath: cfg.providerClaudePath,
+        providerClaudeModel: cfg.providerClaudeModel,
+        providerFallbackToAlternate: cfg.providerFallbackToAlternate,
         providerPolicyLevel: cfg.providerPolicyLevel,
         providerDisableFeatures: cfg.providerDisableFeatures,
         providerSandboxMode: cfg.providerSandboxMode,
@@ -104,8 +112,11 @@ function parseSettingsInput(value: unknown): SettingsData {
   const gatewayHost = typeof data.gatewayHost === "string" ? data.gatewayHost.trim() : "";
   const gatewayToken = typeof data.gatewayToken === "string" ? data.gatewayToken.trim() : "";
   const displayName = typeof data.displayName === "string" ? data.displayName.trim() : "";
+  const providerKindRaw = typeof data.providerKind === "string" ? data.providerKind.trim() : "";
   const providerCodexPath = typeof data.providerCodexPath === "string" ? data.providerCodexPath.trim() : "";
   const providerCodexModel = typeof data.providerCodexModel === "string" ? data.providerCodexModel.trim() : "";
+  const providerClaudePath = typeof data.providerClaudePath === "string" ? data.providerClaudePath.trim() : "";
+  const providerClaudeModel = typeof data.providerClaudeModel === "string" ? data.providerClaudeModel.trim() : "";
   const providerPolicyLevelRaw = typeof data.providerPolicyLevel === "string" ? data.providerPolicyLevel.trim() : "";
   const providerDisableFeaturesRaw =
     typeof data.providerDisableFeatures === "string" ? data.providerDisableFeatures : "";
@@ -147,8 +158,12 @@ function parseSettingsInput(value: unknown): SettingsData {
     autoConnect: Boolean(data.autoConnect),
     displayName,
     providerEnabled: Boolean(data.providerEnabled),
+    providerKind: providerKindRaw === "claude" ? "claude" : "codex",
     providerCodexPath: providerCodexPath || "codex",
     providerCodexModel,
+    providerClaudePath: providerClaudePath || "claude",
+    providerClaudeModel,
+    providerFallbackToAlternate: Boolean(data.providerFallbackToAlternate),
     providerPolicyLevel:
       providerPolicyLevelRaw === "extended" || providerPolicyLevelRaw === "raw" ? providerPolicyLevelRaw : "safe",
     providerDisableFeatures: providerDisableFeaturesRaw
@@ -174,8 +189,12 @@ async function applySettings(data: SettingsData): Promise<void> {
   await cfg.update("autoConnect", data.autoConnect, vscode.ConfigurationTarget.Global);
   await cfg.update("displayName", data.displayName, vscode.ConfigurationTarget.Global);
   await cfg.update("provider.enabled", data.providerEnabled, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.kind", data.providerKind, vscode.ConfigurationTarget.Global);
   await cfg.update("provider.codex.path", data.providerCodexPath, vscode.ConfigurationTarget.Global);
   await cfg.update("provider.codex.model", data.providerCodexModel, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.claude.path", data.providerClaudePath, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.claude.model", data.providerClaudeModel, vscode.ConfigurationTarget.Global);
+  await cfg.update("provider.fallbackToAlternate", data.providerFallbackToAlternate, vscode.ConfigurationTarget.Global);
   await cfg.update("provider.policyLevel", data.providerPolicyLevel, vscode.ConfigurationTarget.Global);
   await cfg.update("provider.disableFeatures", data.providerDisableFeatures, vscode.ConfigurationTarget.Global);
   await cfg.update("provider.sandboxMode", data.providerSandboxMode, vscode.ConfigurationTarget.Global);
@@ -383,6 +402,14 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
             <div class="hint" id="displayNameHint"></div>
           </div>
           <div class="field">
+            <label for="providerKind" id="providerKindLabel"></label>
+            <select id="providerKind">
+              <option value="codex" ${data.providerKind === "codex" ? "selected" : ""}>codex-cli</option>
+              <option value="claude" ${data.providerKind === "claude" ? "selected" : ""}>claude-cli</option>
+            </select>
+            <div class="hint" id="providerKindHint"></div>
+          </div>
+          <div class="field">
             <label for="providerCodexPath" id="providerCodexPathLabel"></label>
             <input id="providerCodexPath" type="text" value="${escapeHtml(data.providerCodexPath)}" placeholder="codex">
             <div class="hint" id="providerCodexPathHint"></div>
@@ -392,6 +419,21 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
             <input id="providerCodexModel" type="text" value="${escapeHtml(data.providerCodexModel)}" placeholder="">
             <div class="hint" id="providerCodexModelHint"></div>
           </div>
+          <div class="field">
+            <label for="providerClaudePath" id="providerClaudePathLabel"></label>
+            <input id="providerClaudePath" type="text" value="${escapeHtml(data.providerClaudePath)}" placeholder="claude">
+            <div class="hint" id="providerClaudePathHint"></div>
+          </div>
+          <div class="field">
+            <label for="providerClaudeModel" id="providerClaudeModelLabel"></label>
+            <input id="providerClaudeModel" type="text" value="${escapeHtml(data.providerClaudeModel)}" placeholder="">
+            <div class="hint" id="providerClaudeModelHint"></div>
+          </div>
+          <div class="row">
+            <input id="providerFallbackToAlternate" type="checkbox" ${data.providerFallbackToAlternate ? "checked" : ""}>
+            <label for="providerFallbackToAlternate" id="providerFallbackToAlternateLabel"></label>
+          </div>
+          <div class="hint" id="providerFallbackToAlternateHint"></div>
           <div class="field">
             <label for="providerPolicyLevel" id="providerPolicyLevelLabel"></label>
             <select id="providerPolicyLevel">
@@ -468,10 +510,30 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
       nodeTitle: { "zh-CN": "\\u8282\\u70b9\\u4e0e Provider", "en": "Node and Provider" },
       displayNameLabel: { "zh-CN": "\\u663e\\u793a\\u540d\\u79f0", "en": "Display Name" },
       displayNameHint: { "zh-CN": "\\u8fd9\\u662f Gateway \\u4e2d\\u770b\\u5230\\u7684\\u8282\\u70b9\\u540d\\u79f0\\u3002", "en": "This is the node name shown in the Gateway." },
+      providerKindLabel: { "zh-CN": "Provider \\u7c7b\\u578b", "en": "Provider Kind" },
+      providerKindHint: {
+        "zh-CN": "\\u53ea\\u6709 CLI provider \\u4f1a\\u7528\\u4e8e long-running task\\u3002Claude Code for VS Code \\u662f handoff-only\\uff0c\\u4e0d\\u662f\\u540e\\u53f0 task provider\\u3002",
+        "en": "Only CLI providers run long-running tasks. Claude Code for VS Code is handoff-only and is not a background task provider."
+      },
       providerCodexPathLabel: { "zh-CN": "Codex \\u53ef\\u6267\\u884c\\u8def\\u5f84", "en": "Codex Executable" },
       providerCodexPathHint: { "zh-CN": "\\u53ef\\u4ee5\\u5199 codex\\uff0c\\u4e5f\\u53ef\\u4ee5\\u586b\\u7edd\\u5bf9\\u8def\\u5f84\\u3002", "en": "Use codex or an absolute executable path." },
       providerCodexModelLabel: { "zh-CN": "Codex \\u6a21\\u578b\\uff08\\u53ef\\u9009\\uff09", "en": "Codex Model (Optional)" },
       providerCodexModelHint: { "zh-CN": "\\u7559\\u7a7a\\u65f6\\u4f7f\\u7528 Codex CLI \\u9ed8\\u8ba4\\u6a21\\u578b\\u3002", "en": "Leave empty to use the Codex CLI default model." },
+      providerClaudePathLabel: { "zh-CN": "Claude CLI \\u53ef\\u6267\\u884c\\u8def\\u5f84", "en": "Claude CLI Executable" },
+      providerClaudePathHint: {
+        "zh-CN": "\\u586b\\u5199 Claude CLI \\u7684\\u547d\\u4ee4\\u540d\\u6216\\u7edd\\u5bf9\\u8def\\u5f84\\u3002\\u5355\\u72ec\\u5b89\\u88c5 Claude Code for VS Code \\u6269\\u5c55\\u4e0d\u7b49\u4e8e\\u8fd9\\u4e2a CLI\u3002",
+        "en": "Use the Claude CLI command name or an absolute executable path. Installing Claude Code for VS Code alone does not provide this CLI runtime."
+      },
+      providerClaudeModelLabel: { "zh-CN": "Claude \\u6a21\\u578b\\uff08\\u53ef\\u9009\\uff09", "en": "Claude Model (Optional)" },
+      providerClaudeModelHint: { "zh-CN": "\\u7559\\u7a7a\\u65f6\\u4f7f\\u7528 Claude Code \\u9ed8\\u8ba4\\u6a21\\u578b\\u3002", "en": "Leave empty to use the Claude Code default model." },
+      providerFallbackToAlternateLabel: {
+        "zh-CN": "\\u9009\\u4e2d provider \\u4e0d\\u53ef\\u7528\\u65f6\\u81ea\\u52a8\\u56de\\u9000\\u5230\\u53e6\\u4e00\\u4e2a provider",
+        "en": "Fall back to the other provider when unavailable"
+      },
+      providerFallbackToAlternateHint: {
+        "zh-CN": "\\u9ed8\\u8ba4\\u5173\\u95ed\\u3002\\u5f00\\u542f\\u540e\\uff0c\\u5f53\\u524d provider \\u4e0d\\u53ef\\u7528\\u65f6\\u4f1a\\u5c1d\\u8bd5\\u5185\\u7f6e\u7684\u53e6\u4e00\u4e2a provider\u3002",
+        "en": "Off by default. When enabled, ClawDrive will try the other built-in provider if the selected one is unavailable."
+      },
       providerPolicyLevelLabel: { "zh-CN": "Provider \\u7b56\\u7565\\u5c42\\u7ea7", "en": "Provider Policy Level" },
       providerPolicyLevelHint: {
         "zh-CN": "\\u9ed8\\u8ba4 safe \\u4f7f\\u7528\\u9694\\u79bb CODEX_HOME\\uff0cextended \\u4f1a\\u4ece\\u4f60\\u7684\\u672c\\u5730 Codex home \\u6d3e\\u751f task CODEX_HOME\\u5e76\\u5bf9\u914d\u7f6e\\u505a\\u5b89\\u5168\\u5254\\u79bb\\uff0craw \\u5219\\u76f4\\u63a5\\u7ee7\\u627f\\u539f\\u59cb CODEX_HOME\\uff08\\u98ce\\u9669\\u6700\\u9ad8\\uff09\\u3002",
@@ -487,7 +549,7 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
         "zh-CN": "\\u9ed8\\u8ba4 read-only\\uff0cworkspace-write \\u4e3a\\u5de5\\u4f5c\\u533a\\u5199\\u5165\\u6388\\u6743\\uff0cdanger-full-access \\u4e3a\\u6700\\u9ad8\\u6743\\u9650\\uff08\\u98ce\\u9669\\u6700\\u9ad8\\uff09\\u3002",
         "en": "Default is read-only. workspace-write allows workspace writes. danger-full-access removes sandboxing (highest risk)."
       },
-      providerEnabledLabel: { "zh-CN": "\\u542f\\u7528 Codex CLI Provider", "en": "Enable Codex CLI Provider" },
+      providerEnabledLabel: { "zh-CN": "\\u542f\\u7528 Provider task \\u6267\\u884c", "en": "Enable Provider Tasks" },
       providerEnabledHint: { "zh-CN": "\\u9700\\u8981\\u4efb\\u52a1\\u547d\\u4ee4\\u65f6\\u6253\\u5f00\\u5b83\\u3002", "en": "Turn this on before using task commands." },
       tasksTitle: { "zh-CN": "\\u4efb\\u52a1\\u9ed8\\u8ba4\\u503c", "en": "Task Defaults" },
       tasksDefaultTimeoutLabel: { "zh-CN": "\\u9ed8\\u8ba4\\u8d85\\u65f6\\uff08ms\\uff09", "en": "Timeout (ms)" },
@@ -499,8 +561,8 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
         "en": "Use this page for configuration and first-time connect. Ongoing status and diagnosis still live in the dashboard."
       },
       note2: {
-        "zh-CN": "\\u5982\\u679c provider \\u62a5 ENOENT\\uff0c\\u8bf7\\u76f4\\u63a5\\u586b codex.exe \\u7684\\u7edd\\u5bf9\\u8def\\u5f84\\u3002",
-        "en": "If the provider reports ENOENT, enter the absolute path to codex.exe."
+        "zh-CN": "\\u5982\\u679c provider \\u62a5 ENOENT\\uff0c\\u8bf7\\u76f4\\u63a5\\u586b\\u5199\\u5bf9\\u5e94 CLI \\u7684\\u7edd\\u5bf9\\u8def\\u5f84\\u3002Claude Code for VS Code \\u6269\\u5c55\\u53ea\\u80fd\\u505a handoff\\uff0c\\u4e0d\u80fd\u4ee3\u66ff CLI task provider\u3002",
+        "en": "If the provider reports ENOENT, enter the absolute path to the selected CLI. Claude Code for VS Code is handoff-only and does not replace a CLI task provider."
       },
       note3: {
         "zh-CN": "\\u70b9\\u51fb\\u201c\\u4fdd\\u5b58\\u5e76\\u8fde\\u63a5\\u201d\\u540e\\u4f1a\\u7acb\\u5373\\u8fde\\u63a5\\uff0c\\u4e0a\\u9762\\u7684 auto-connect \\u5f00\\u5173\\u53ea\\u63a7\\u5236\\u4e0b\\u6b21\\u542f\\u52a8\\u6216\\u91cd\\u8f7d\\u65f6\\u662f\\u5426\\u81ea\\u52a8\\u8fde\\u63a5\\u3002",
@@ -535,8 +597,12 @@ function getHtml(data: SettingsData, cspSource: string, nonce: string): string {
         autoConnect: document.getElementById("autoConnect").checked,
         displayName: document.getElementById("displayName").value,
         providerEnabled: document.getElementById("providerEnabled").checked,
+        providerKind: document.getElementById("providerKind").value,
         providerCodexPath: document.getElementById("providerCodexPath").value,
         providerCodexModel: document.getElementById("providerCodexModel").value,
+        providerClaudePath: document.getElementById("providerClaudePath").value,
+        providerClaudeModel: document.getElementById("providerClaudeModel").value,
+        providerFallbackToAlternate: document.getElementById("providerFallbackToAlternate").checked,
         providerPolicyLevel: document.getElementById("providerPolicyLevel").value,
         providerDisableFeatures: document.getElementById("providerDisableFeatures").value,
         providerSandboxMode: document.getElementById("providerSandboxMode").value,

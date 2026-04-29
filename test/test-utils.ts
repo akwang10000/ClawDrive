@@ -16,6 +16,9 @@ export function makeConfig(overrides?: Partial<ClawDriveConfig>): ClawDriveConfi
     providerKind: "codex",
     providerCodexPath: "codex",
     providerCodexModel: "",
+    providerClaudePath: "claude",
+    providerClaudeModel: "",
+    providerFallbackToAlternate: false,
     providerPolicyLevel: "safe",
     providerDisableFeatures: ["multi_agent", "plugins", "apps", "shell_snapshot"],
     providerSandboxMode: "read-only",
@@ -52,4 +55,24 @@ export function setLanguage(language: string): void {
 
 export function setVscodeConfig(values: Record<string, unknown>): void {
   (vscode as typeof vscode & { __setConfig?: (value: Record<string, unknown>) => void }).__setConfig?.(values);
+}
+
+export function setVscodeOpenExternal(handler: (uri: { toString(): string }) => boolean | Promise<boolean>): void {
+  (
+    vscode as typeof vscode & {
+      __setOpenExternal?: (value: (uri: { toString(): string }) => boolean | Promise<boolean>) => void;
+    }
+  ).__setOpenExternal?.(handler);
+}
+
+export function setVscodeExtensions(entries: Record<string, unknown>): void {
+  (vscode as typeof vscode & { __setExtensions?: (value: Record<string, unknown>) => void }).__setExtensions?.(entries);
+}
+
+export function getRegisteredVscodeCommands(): string[] {
+  return (vscode as typeof vscode & { __getRegisteredCommands?: () => string[] }).__getRegisteredCommands?.() ?? [];
+}
+
+export function clearRegisteredVscodeCommands(): void {
+  (vscode as typeof vscode & { __clearRegisteredCommands?: () => void }).__clearRegisteredCommands?.();
 }

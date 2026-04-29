@@ -15,7 +15,36 @@ test("classifier keeps read-only analysis prompts on analyze", () => {
 
 test("classifier routes plan prompts", () => {
   assert.deepEqual(classifyIntent("给我两个方案，先别改", []), { type: "plan" });
+  assert.deepEqual(classifyIntent("Give me two safe next-step options for investigating this workspace. Do not modify anything.", []), {
+    type: "plan",
+  });
+  assert.deepEqual(
+    classifyIntent(
+      "Give me three feasible next-step options for this workspace, explain impact scope and main risks, and do not modify anything yet.",
+      []
+    ),
+    { type: "plan" }
+  );
+  assert.deepEqual(classifyIntent("What are the options for investigating this task? Do not modify anything.", []), {
+    type: "plan",
+  });
+  assert.deepEqual(classifyIntent("Compare implementation options before changing code.", []), { type: "plan" });
 });
+
+
+test("classifier keeps broad read-only analysis prompts on analyze unless option intent is explicit", () => {
+  assert.deepEqual(classifyIntent("Analyze the best next step for this workspace without changing code.", []), {
+    type: "analyze",
+  });
+  assert.deepEqual(classifyIntent("Explain the safest way to investigate this bug first. Do not modify anything yet.", []), {
+    type: "analyze",
+  });
+  assert.deepEqual(classifyIntent("Compare the provider abstraction across the repository and explain the gaps.", []), {
+    type: "analyze",
+  });
+});
+
+
 
 test("classifier routes apply prompts", () => {
   assert.deepEqual(classifyIntent("修这个 bug", []), { type: "apply" });
@@ -25,6 +54,15 @@ test("classifier routes continue prompts and recommended follow-up", () => {
   assert.deepEqual(classifyIntent("继续", []), { type: "continue" });
   assert.deepEqual(classifyIntent("批准执行", []), { type: "continue" });
   assert.equal(shouldUseRecommended("用推荐方案"), true);
+});
+
+test("classifier routes explicit Claude Code for VS Code handoff prompts", () => {
+  assert.deepEqual(classifyIntent("Open this in Claude Code for VS Code and continue there.", []), {
+    type: "claude_vscode",
+  });
+  assert.deepEqual(classifyIntent("在 Claude Code 里打开并继续处理这个任务", []), {
+    type: "claude_vscode",
+  });
 });
 
 test("classifier blocks unsupported destructive intents", () => {

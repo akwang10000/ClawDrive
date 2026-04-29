@@ -75,6 +75,60 @@ Add new entries at the top of the decision log.
 
 ## Decision Log
 
+### 2026-04-04
+
+- Decision: Route classification now keeps broad read-only analysis prompts on `analyze` unless option or tradeoff intent is explicit.
+- Why: Phrases such as "best next step" or generic read-only investigation wording were still drifting into `plan`, which made route behavior feel wording-sensitive instead of intent-stable.
+- Impact: `plan` now requires clearer option/tradeoff language, while architecture/debugging analysis stays on the normal repository-understanding path.
+
+### 2026-04-04
+
+- Decision: `ClaudeCliProvider` quiet-budget extension is now mode-aware, and only `plan` runs receive the long quiet budget.
+- Why: Complex planning turns can stay semantically quiet much longer than `analyze` or `apply`, while extending all modes equally made non-plan Claude failures take too long to surface.
+- Impact: `plan` keeps extra room for long reasoning turns, but `analyze` and `apply` fail faster on true silent stalls.
+
+### 2026-04-04
+
+- Decision: `ClaudeCliProvider` now prefers a usable captured terminal payload over late fatal trailing runtime stderr on process close.
+- Why: Some Claude runs can produce a valid final semantic result and then emit noisy trailing stderr that would otherwise be treated like a terminal runtime failure.
+- Impact: Claude tasks settle more consistently once a valid terminal payload exists, while real no-result fatal failures still fail normally.
+
+### 2026-04-04
+
+- Decision: Read-only fallback completions now preserve explicit provider evidence so degraded completion remains distinguishable from clean provider success.
+- Why: The task contract intentionally allows bounded local fallback to finish a task, but operators still need enough evidence to tell "provider succeeded" from "provider failed and local fallback completed the work."
+- Impact: `completed` remains the lifecycle state for successful degraded fallback, but callers can now rely on `executionHealth`, `runtimeSignals`, and `providerEvidence` together to interpret the outcome.
+
+### 2026-03-31
+
+- Decision: `ClaudeCliProvider` now emits a bounded stall warning and then fails silent runs that never produce output, instead of waiting in `running + clean` until the outer task timeout.
+- Why: Real Claude background-task repros can now launch successfully through the bundled CLI path but still hang with no stdout, no `turn.completed`, and no runtime signal, which left operators without diagnostic evidence and delayed read-only fallback or failure handling.
+- Impact: Silent Claude analyze/plan/apply runs now degrade and settle earlier with `PROVIDER_RESULT_STALLED` semantics, making OpenClaw repros observable and preventing indefinite clean-looking hangs after synthetic turn start.
+
+### 2026-03-31
+
+- Decision: `ClaudeCliProvider` now auto-discovers the bundled Claude CLI inside installed `Claude Code for VS Code` extension directories when the configured executable name is not found on `PATH`.
+- Why: Some environments rely on the extension-bundled native Claude binary plus LiteLLM-style local gateway config, so strict `PATH`-only discovery was incorrectly surfacing `PROVIDER_NOT_READY` even though a valid local CLI runtime was already present.
+- Impact: Background Claude tasks still require the Claude CLI runtime semantics, but operators no longer need to manually point `clawdrive.provider.claude.path` at the extension's bundled `claude.exe` in common local VS Code installs.
+
+### 2026-03-30
+
+- Decision: `Claude Code for VS Code` support is a handoff-only route within `vscode.agent.route` plus a local `clawdrive.openInClaudeCode` helper, not a long-running `TaskProvider`.
+- Why: The documented VS Code integration exposes an IDE handoff surface that can open Claude and prefill a prompt, but it does not provide a stable third-party background task contract equivalent to the CLI-backed providers.
+- Impact: `codex` and `claude` remain the only background task providers; explicit Claude VS Code requests now open Claude Code with a prefilled prompt and return an immediate direct-result acknowledgement instead of entering `vscode.agent.task.*`.
+
+### 2026-03-30
+
+- Decision: Alternate built-in provider fallback is now an explicit operator option instead of an always-on readiness behavior.
+- Why: Some environments need strict provider selection semantics, especially when `claude` means a specific local plugin/runtime expectation rather than “any Claude-capable backend”.
+- Impact: Default behavior is now strict again: the selected provider must be ready or the task stays `PROVIDER_NOT_READY`; operators can opt into automatic fallback only by enabling the dedicated setting.
+
+### 2026-03-30
+
+- Decision: Provider selection is now a stable `codex | claude` configuration boundary, with Claude Code integrated as a separate provider implementation instead of extending the Codex-specific runtime.
+- Why: The task model and approval boundary are provider-agnostic, but Codex CLI assumptions in config, settings, diagnostics, and task startup needed to be split before Claude Code could be supported safely.
+- Impact: `clawdrive.provider.kind` now routes long-running tasks to either Codex or Claude Code, settings expose separate executable/model fields for each, and task semantics stay on the existing `analyze` / `plan` / `apply` contract.
+
 ### 2026-03-30
 
 - Decision: TaskService now keeps a service-level hard-transport watchdog for active provider runs, so `turn.started` tasks that record unrecovered hard transport warnings are aborted and normalized even if the provider promise itself never settles.

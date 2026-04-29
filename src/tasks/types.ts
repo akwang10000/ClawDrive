@@ -85,6 +85,7 @@ export interface TaskProviderEvidence {
     | "embedded_json";
   finalizationPath: "none" | "output_file" | "stream_capture" | "stdout_scan" | "embedded_json" | "timeout";
   lastAgentMessagePreview: string | null;
+  rawStdoutPreview?: string | null;
   stdoutEventTail: string[];
 }
 

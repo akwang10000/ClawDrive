@@ -5,11 +5,22 @@ import { getOutputChannel, logError } from "./logger";
 import type { AgentRouteService } from "./routing/service";
 import type { TaskService } from "./tasks/service";
 import type { AgentRouteResponse } from "./routing/types";
-import type { TaskResultPayload, TaskSnapshot } from "./tasks/types";
+import type { TaskExecutionHealth, TaskResultPayload, TaskSnapshot, TaskState } from "./tasks/types";
 
 interface SelftestCase {
   name: string;
   prompt: string;
+  autoResolve?: boolean;
+}
+
+interface SelftestApplyProgress {
+  observedStates: TaskState[];
+  runningSnapshotSeen: boolean;
+  providerEvidenceDuringRunning: boolean;
+  decisionSeen: boolean;
+  approvalSeen: boolean;
+  finalState: TaskState | null;
+  finalExecutionHealth: TaskExecutionHealth | null;
 }
 
 interface SelftestCaseResult {
@@ -19,6 +30,7 @@ interface SelftestCaseResult {
   taskId: string | null;
   snapshot: TaskSnapshot | null;
   result: TaskResultPayload | null;
+  applyProgress: SelftestApplyProgress | null;
   error: string | null;
 }
 
@@ -43,6 +55,7 @@ const DEFAULT_CASES: SelftestCase[] = [
   { name: "analyze", prompt: "解释这个仓库做什么" },
   { name: "plan", prompt: "给我两个方案，先别改" },
   { name: "plan_complex", prompt: "给我三个可行方案，说明影响范围和主要风险，先别改" },
+  { name: "apply", prompt: "先给出一个最小改动方案供我确认；确认后再执行，不要直接结束。", autoResolve: true },
 ];
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -88,6 +101,7 @@ async function runCases(routeService: AgentRouteService, taskService: TaskServic
       taskId: null,
       snapshot: null,
       result: null,
+      applyProgress: null,
       error: null,
     };
     try {
@@ -98,11 +112,13 @@ async function runCases(routeService: AgentRouteService, taskService: TaskServic
           (route.kind === "task" ? route.data?.taskId : route.data?.snapshot?.taskId) ?? null;
         if (taskId) {
           caseResult.taskId = taskId;
-          let snapshot = await waitForTask(taskService, taskId);
-          if (snapshot) {
-            snapshot = await resolvePendingTask(taskService, snapshot);
+          const tracker = createApplyProgressTracker();
+          let snapshot = await waitForTask(taskService, taskId, tracker);
+          if (snapshot && entry.autoResolve) {
+            snapshot = await resolvePendingTask(taskService, snapshot, tracker);
           }
           caseResult.snapshot = snapshot;
+          caseResult.applyProgress = finalizeApplyProgress(tracker, snapshot);
           if (snapshot) {
             caseResult.result = await taskService.getTaskResult(taskId);
           }
@@ -116,10 +132,15 @@ async function runCases(routeService: AgentRouteService, taskService: TaskServic
   return results;
 }
 
-async function waitForTask(taskService: TaskService, taskId: string): Promise<TaskSnapshot | null> {
+async function waitForTask(
+  taskService: TaskService,
+  taskId: string,
+  tracker?: SelftestApplyProgress
+): Promise<TaskSnapshot | null> {
   const deadline = Date.now() + DEFAULT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const snapshot = taskService.getTask(taskId);
+    recordApplyProgress(tracker, snapshot);
     if (snapshot.state !== "running" && snapshot.state !== "queued") {
       return snapshot;
     }
@@ -128,10 +149,15 @@ async function waitForTask(taskService: TaskService, taskId: string): Promise<Ta
   return null;
 }
 
-async function resolvePendingTask(taskService: TaskService, snapshot: TaskSnapshot): Promise<TaskSnapshot> {
+async function resolvePendingTask(
+  taskService: TaskService,
+  snapshot: TaskSnapshot,
+  tracker?: SelftestApplyProgress
+): Promise<TaskSnapshot> {
   let current = snapshot;
   const maxSteps = 2;
   for (let step = 0; step < maxSteps; step += 1) {
+    recordApplyProgress(tracker, current);
     if (current.state === "waiting_decision") {
       const optionId =
         current.decision?.recommendedOptionId ?? current.decision?.options?.[0]?.id ?? undefined;
@@ -140,7 +166,8 @@ async function resolvePendingTask(taskService: TaskService, snapshot: TaskSnapsh
         optionId,
         message: optionId ? undefined : "continue",
       });
-      current = (await waitForTask(taskService, current.taskId)) ?? current;
+      recordApplyProgress(tracker, current);
+      current = (await waitForTask(taskService, current.taskId, tracker)) ?? current;
       continue;
     }
     if (current.state === "waiting_approval") {
@@ -148,12 +175,62 @@ async function resolvePendingTask(taskService: TaskService, snapshot: TaskSnapsh
         taskId: current.taskId,
         approval: "approved",
       });
-      current = (await waitForTask(taskService, current.taskId)) ?? current;
+      recordApplyProgress(tracker, current);
+      current = (await waitForTask(taskService, current.taskId, tracker)) ?? current;
       continue;
     }
     break;
   }
+  recordApplyProgress(tracker, current);
   return current;
+}
+
+function createApplyProgressTracker(): SelftestApplyProgress {
+  return {
+    observedStates: [],
+    runningSnapshotSeen: false,
+    providerEvidenceDuringRunning: false,
+    decisionSeen: false,
+    approvalSeen: false,
+    finalState: null,
+    finalExecutionHealth: null,
+  };
+}
+
+function recordApplyProgress(tracker: SelftestApplyProgress | undefined, snapshot: TaskSnapshot | null): void {
+  if (!tracker || !snapshot) {
+    return;
+  }
+  if (tracker.observedStates.at(-1) !== snapshot.state) {
+    tracker.observedStates.push(snapshot.state);
+  }
+  if (snapshot.state === "running") {
+    tracker.runningSnapshotSeen = true;
+    if (snapshot.providerEvidence) {
+      tracker.providerEvidenceDuringRunning = true;
+    }
+  }
+  if (snapshot.decision) {
+    tracker.decisionSeen = true;
+  }
+  if (snapshot.approval) {
+    tracker.approvalSeen = true;
+  }
+  tracker.finalState = snapshot.state;
+  tracker.finalExecutionHealth = snapshot.executionHealth;
+}
+
+function finalizeApplyProgress(
+  tracker: SelftestApplyProgress,
+  snapshot: TaskSnapshot | null
+): SelftestApplyProgress | null {
+  if (tracker.observedStates.length === 0 && !snapshot) {
+    return null;
+  }
+  if (snapshot) {
+    recordApplyProgress(tracker, snapshot);
+  }
+  return tracker;
 }
 
 function getWorkspaceRoot(): string | null {
@@ -217,11 +294,27 @@ function formatCaseStatus(entry: SelftestCaseResult): string {
   if (!snapshot) {
     return entry.route?.kind ?? "pending";
   }
+  if (entry.name === "apply" && entry.applyProgress) {
+    return formatApplyProgress(entry.applyProgress);
+  }
   const health = snapshot.executionHealth ?? "clean";
   if (snapshot.state === "completed") {
     return health === "clean" ? "completed" : `completed (${health})`;
   }
   return snapshot.state;
+}
+
+function formatApplyProgress(progress: SelftestApplyProgress): string {
+  const parts = [`states=${progress.observedStates.join("->") || "none"}`];
+  parts.push(`running=${progress.runningSnapshotSeen ? "yes" : "no"}`);
+  parts.push(`evidence@running=${progress.providerEvidenceDuringRunning ? "yes" : "no"}`);
+  parts.push(`decision=${progress.decisionSeen ? "yes" : "no"}`);
+  parts.push(`approval=${progress.approvalSeen ? "yes" : "no"}`);
+  if (progress.finalState) {
+    const healthSuffix = progress.finalExecutionHealth ? `/${progress.finalExecutionHealth}` : "";
+    parts.push(`final=${progress.finalState}${healthSuffix}`);
+  }
+  return parts.join(", ");
 }
 
 async function writeReport(report: SelftestReport): Promise<string> {

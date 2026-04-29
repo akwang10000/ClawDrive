@@ -17,14 +17,14 @@ export function providerStatusDisabled(): { label: string; message: string; deta
     return {
       label: "Disabled",
       message: "Provider status: disabled.",
-      detail: "Set clawdrive.provider.enabled to true to enable Codex task execution.",
+      detail: "Set clawdrive.provider.enabled to true to enable provider-backed task execution.",
     };
   }
 
   return {
     label: "\u672A\u542F\u7528",
     message: "Provider \u72B6\u6001\uff1a\u672A\u542F\u7528\u3002",
-    detail: "\u5C06 clawdrive.provider.enabled \u8BBE\u4E3A true \u540E\u624D\u80FD\u542F\u7528 Codex \u4EFB\u52A1\u6267\u884C\u3002",
+    detail: "\u5C06 clawdrive.provider.enabled \u8BBE\u4E3A true \u540E\u624D\u80FD\u542F\u7528 provider \u4EFB\u52A1\u6267\u884C\u3002",
   };
 }
 

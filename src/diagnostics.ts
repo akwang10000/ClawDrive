@@ -193,27 +193,46 @@ function buildActionableHint(
 
   if (!diagnosis.providerStatus.ready) {
     return localizedText(
-      "Fix provider readiness first, especially the Codex executable path or local installation.",
-      "\u5148\u4fee\u590d provider \u5c31\u7eea\u95ee\u9898\uff0c\u91cd\u70b9\u68c0\u67e5 Codex \u53ef\u6267\u884c\u8def\u5f84\u548c\u672c\u5730\u5b89\u88c5\u3002"
+      "Fix provider readiness first, especially the selected provider executable path or local installation.",
+      "\u5148\u4fee\u590d provider \u5c31\u7eea\u95ee\u9898\uff0c\u91cd\u70b9\u68c0\u67e5\u5df2\u9009 provider \u7684\u53ef\u6267\u884c\u8def\u5f84\u548c\u672c\u5730\u5b89\u88c5\u3002"
     );
   }
 
   if (latestTask?.state === "failed") {
+    const fatalSignal = findLatestFatalSignal(latestTask);
+    if (fatalSignal?.code === "PROVIDER_AUTH_FAILED") {
+      return localizedText(
+        "Provider authentication failed. Refresh Claude Code authentication or configure the required API key before retrying.",
+        "Provider 认证失败。请先重新登录 Claude Code，或配置所需的 API key，然后再重试。"
+      );
+    }
+    if (fatalSignal?.code === "PROVIDER_MODEL_INVALID" || latestTask.errorCode === "PROVIDER_MODEL_INVALID") {
+      return localizedText(
+        "The configured Claude model is invalid or unavailable. Check clawdrive.provider.claude.model and prefer leaving it empty to use the Claude Code default model.",
+        "当前配置的 Claude 模型无效或不可用。请检查 clawdrive.provider.claude.model，并优先留空以使用 Claude Code 默认模型。"
+      );
+    }
+    if (fatalSignal?.code === "PROVIDER_MCP_COMPATIBILITY_FAILED" || latestTask.errorCode === "PROVIDER_MCP_COMPATIBILITY_FAILED") {
+      return localizedText(
+        "Provider MCP compatibility failed. Check the claude-vscode MCP server, tool registration, and method compatibility before retrying.",
+        "Provider 的 MCP 兼容性失败。请先检查 claude-vscode MCP 服务、工具注册与方法兼容性，再重试。"
+      );
+    }
     if (latestTask.errorCode === "PROVIDER_TRANSPORT_FAILED") {
       if (isMissingContentTypeTransportWarning(findTransportSignal(latestTask))) {
         return localizedText(
           "Provider transport failed after the downstream service returned an invalid or empty response. Check MCP, relay, or provider-gateway compatibility and ensure HTTP responses include a content-type.",
-          "Provider transport \u5931\u8d25\uff0c\u56e0\u4e3a\u4e0b\u6e38\u670d\u52a1\u8fd4\u56de\u4e86\u65e0\u6548\u6216\u7a7a\u54cd\u5e94\uff0c\u8bf7\u68c0\u67e5 MCP\u3001relay \u6216 provider gateway \u517c\u5bb9\u6027\uff0c\u5e76\u786e\u4fdd HTTP \u54cd\u5e94\u5305\u542b content-type\u3002"
+          "Provider transport 失败，因为下游服务返回了无效或空响应，请检查 MCP、relay 或 provider gateway 兼容性，并确保 HTTP 响应包含 content-type。"
         );
       }
       return localizedText(
         "Provider transport failed. Check the downstream MCP service status and ensure HTTP responses include a valid content-type.",
-        "Provider transport \u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u4e0b\u6e38 MCP \u670d\u52a1\u662f\u5426\u53ef\u7528\uff0c\u5e76\u786e\u4fdd HTTP \u54cd\u5e94\u5305\u542b\u5408\u6cd5\u7684 content-type\u3002"
+        "Provider transport 失败，请检查下游 MCP 服务是否可用，并确保 HTTP 响应包含合法的 content-type。"
       );
     }
     return localizedText(
       "Inspect the latest failed task summary and error code before re-running the task.",
-      "\u5148\u67e5\u770b\u6700\u8fd1\u5931\u8d25\u4efb\u52a1\u7684\u6458\u8981\u548c\u9519\u8bef\u7801\uff0c\u518d\u51b3\u5b9a\u662f\u5426\u91cd\u8bd5\u3002"
+      "先查看最近失败任务的摘要和错误码，再决定是否重试。"
     );
   }
 
@@ -257,13 +276,13 @@ function buildActionableHint(
     if (transportWarning) {
       if (isMissingContentTypeTransportWarning(transportWarning)) {
         return localizedText(
-          "The latest task reached Codex and saw a downstream transport warning about a missing content-type or empty body. It may still recover, but if it remains stuck after turn.started, check MCP, relay, or provider-gateway compatibility.",
-          "\u6700\u8fd1\u4efb\u52a1\u5df2\u7ecf\u5230\u8fbe Codex\uff0c\u5e76\u89c2\u5bdf\u5230\u4e0b\u6e38 transport \u7684\u7f3a\u5931 content-type \u6216\u7a7a body \u544a\u8b66\u3002\u5b83\u4ecd\u53ef\u80fd\u6062\u590d\uff0c\u4f46\u5982\u679c\u5728 turn.started \u4e4b\u540e\u4ecd\u957f\u65f6\u95f4\u5361\u4f4f\uff0c\u8bf7\u68c0\u67e5 MCP\u3001relay \u6216 provider gateway \u7684\u517c\u5bb9\u6027\u3002"
+          "The latest task reached the provider and saw a downstream transport warning about a missing content-type or empty body. It may still recover, but if it remains stuck after turn.started, check MCP, relay, or provider-gateway compatibility.",
+          "\u6700\u8fd1\u4efb\u52a1\u5df2\u7ecf\u5230\u8fbe provider\uff0c\u5e76\u89c2\u5bdf\u5230\u4e0b\u6e38 transport \u7684\u7f3a\u5931 content-type \u6216\u7a7a body \u544a\u8b66\u3002\u5b83\u4ecd\u53ef\u80fd\u6062\u590d\uff0c\u4f46\u5982\u679c\u5728 turn.started \u4e4b\u540e\u4ecd\u957f\u65f6\u95f4\u5361\u4f4f\uff0c\u8bf7\u68c0\u67e5 MCP\u3001relay \u6216 provider gateway \u7684\u517c\u5bb9\u6027\u3002"
         );
       }
       return localizedText(
-        "The latest task reached Codex and saw a provider transport warning before the final result arrived. It may still recover, but repeated stalls should be investigated in the downstream MCP or provider transport layer.",
-        "\u6700\u8fd1\u4efb\u52a1\u5df2\u7ecf\u5230\u8fbe Codex\uff0c\u4f46\u5728\u6700\u7ec8\u7ed3\u679c\u5230\u8fbe\u524d\u51fa\u73b0\u4e86 provider transport \u544a\u8b66\u3002\u5b83\u4ecd\u53ef\u80fd\u6062\u590d\uff0c\u4f46\u82e5\u53cd\u590d\u5361\u4f4f\uff0c\u4ecd\u5e94\u8c03\u67e5\u4e0b\u6e38 MCP \u6216 provider transport \u5c42\u3002"
+        "The latest task reached the provider and saw a transport warning before the final result arrived. It may still recover, but repeated stalls should be investigated in the downstream MCP or provider transport layer.",
+        "\u6700\u8fd1\u4efb\u52a1\u5df2\u7ecf\u5230\u8fbe provider\uff0c\u4f46\u5728\u6700\u7ec8\u7ed3\u679c\u5230\u8fbe\u524d\u51fa\u73b0\u4e86 transport \u544a\u8b66\u3002\u5b83\u4ecd\u53ef\u80fd\u6062\u590d\uff0c\u4f46\u82e5\u53cd\u590d\u5361\u4f4f\uff0c\u4ecd\u5e94\u8c03\u67e5\u4e0b\u6e38 MCP \u6216 provider transport \u5c42\u3002"
       );
     }
   }
@@ -451,7 +470,7 @@ export function buildOperatorStatusFromDiagnosis(
       : null;
   const latestFatalSummary =
     latest?.state === "failed"
-      ? latestFailureSummary
+      ? latestFailureSummary ?? summarizeRuntimeSignals(latest.runtimeSignals, true)
       : latest
         ? summarizeRuntimeSignals(latest.runtimeSignals, true)
         : null;
@@ -532,6 +551,17 @@ function summarizeRuntimeSignals(signals: TaskRuntimeSignal[], fatalOnly: boolea
   return filtered
     .map((signal) => `${signal.code}: ${signal.summary}${signal.count > 1 ? ` x${signal.count}` : ""}`)
     .join("; ");
+}
+
+function findLatestFatalSignal(task: DiagnosisTaskSummary | null): TaskRuntimeSignal | null {
+  if (!task) {
+    return null;
+  }
+  return (
+    [...task.runtimeSignals]
+      .filter((signal) => signal.severity === "fatal")
+      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt))[0] ?? null
+  );
 }
 
 function isProviderTurnStalled(task: DiagnosisTaskSummary | null): boolean {

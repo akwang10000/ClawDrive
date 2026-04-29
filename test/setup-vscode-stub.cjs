@@ -4,6 +4,9 @@ const fs = require("fs/promises");
 
 const configuration = new Map();
 const outputLines = [];
+const registeredExtensions = new Map();
+const registeredCommands = new Map();
+let openExternalHandler = async () => true;
 
 class Disposable {
   constructor(fn) {
@@ -70,6 +73,10 @@ const vscodeStub = {
   EventEmitter,
   ThemeIcon,
   TreeItem,
+  StatusBarAlignment: {
+    Left: 1,
+    Right: 2,
+  },
   TreeItemCollapsibleState: {
     None: 0,
   },
@@ -82,11 +89,48 @@ const vscodeStub = {
       return {
         scheme: "file",
         fsPath: path.resolve(fsPath),
+        toString() {
+          return `file://${this.fsPath.replace(/\\/g, "/")}`;
+        },
       };
+    },
+    parse(value) {
+      const parsed = new URL(value);
+      return {
+        scheme: parsed.protocol.replace(/:$/, ""),
+        authority: parsed.host,
+        path: parsed.pathname,
+        query: parsed.search.replace(/^\?/, ""),
+        fsPath: parsed.pathname,
+        toString() {
+          return value;
+        },
+      };
+    },
+  },
+  commands: {
+    registerCommand(commandId, handler) {
+      registeredCommands.set(commandId, handler);
+      return new Disposable(() => registeredCommands.delete(commandId));
+    },
+    async executeCommand(commandId, ...args) {
+      const handler = registeredCommands.get(commandId);
+      if (!handler) {
+        throw new Error(`Command not registered: ${commandId}`);
+      }
+      return await handler(...args);
     },
   },
   env: {
     language: "en",
+    async openExternal(uri) {
+      return await openExternalHandler(uri);
+    },
+  },
+  extensions: {
+    getExtension(id) {
+      return registeredExtensions.get(id);
+    },
   },
   workspace: {
     name: "test-workspace",
@@ -97,6 +141,9 @@ const vscodeStub = {
           return configuration.has(`${section}.${key}`) ? configuration.get(`${section}.${key}`) : fallback;
         },
       };
+    },
+    onDidChangeConfiguration() {
+      return new Disposable();
     },
     async openTextDocument(uri) {
       const content = await fs.readFile(uri.fsPath, "utf8");
@@ -130,10 +177,29 @@ const vscodeStub = {
     createOutputChannel() {
       return new OutputChannel();
     },
+    createStatusBarItem() {
+      return {
+        text: "",
+        tooltip: "",
+        command: undefined,
+        show() {},
+        hide() {},
+        dispose() {},
+      };
+    },
+    registerTreeDataProvider() {
+      return new Disposable();
+    },
     async showWarningMessage() {
       return undefined;
     },
     async showInformationMessage() {
+      return undefined;
+    },
+    async showErrorMessage() {
+      return undefined;
+    },
+    async showInputBox() {
       return undefined;
     },
   },
@@ -154,6 +220,21 @@ const vscodeStub = {
   },
   __clearOutputLines() {
     outputLines.length = 0;
+  },
+  __setOpenExternal(handler) {
+    openExternalHandler = typeof handler === "function" ? handler : async () => true;
+  },
+  __setExtensions(entries) {
+    registeredExtensions.clear();
+    for (const [id, value] of Object.entries(entries || {})) {
+      registeredExtensions.set(id, value);
+    }
+  },
+  __getRegisteredCommands() {
+    return [...registeredCommands.keys()];
+  },
+  __clearRegisteredCommands() {
+    registeredCommands.clear();
   },
 };
 

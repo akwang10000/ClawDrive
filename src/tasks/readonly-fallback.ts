@@ -11,7 +11,7 @@ import { createWorkspaceInspector } from "../routing/workspace-inspector";
 import type { TaskDecisionOption, TaskMode, TaskRunResult } from "./types";
 
 export interface ReadonlyTaskFallbackContext {
-  mode: Extract<TaskMode, "analyze" | "plan">;
+  mode: Extract<TaskMode, "analyze" | "plan" | "apply">;
   prompt: string;
   paths: string[];
   workspacePath: string | null;
@@ -20,10 +20,10 @@ export interface ReadonlyTaskFallbackContext {
 export function shouldAttemptReadonlyTaskFallback(
   context: { mode: TaskMode; prompt: string; paths: string[]; workspacePath: string | null }
 ): boolean {
-  if (!context.workspacePath || context.mode === "apply") {
+  if (!context.workspacePath) {
     return false;
   }
-  if (context.mode === "analyze") {
+  if (context.mode === "analyze" || context.mode === "plan" || context.mode === "apply") {
     return true;
   }
   const prompt = context.prompt.toLowerCase();
@@ -155,6 +155,41 @@ function buildFallbackDecision(
   const repoTopDirectories = repository?.root.directory.topDirectories ?? [];
   const srcModules = findSrcModules(repository);
   const options: TaskDecisionOption[] = [];
+
+  if (context.mode === "apply") {
+    options.push({
+      id: "option_apply_pipeline_first",
+      title: text("Review Runtime Path First", "先审核运行链路"),
+      summary: text(
+        `Review ${runtimePathSummary || "the extension entry and task pipeline files"} first, then prepare the smallest safe code change proposal before applying anything.`,
+        `先审核 ${runtimePathSummary || "扩展入口和任务链路文件"}，确认最小安全改动方案后再进入实际修改。`
+      ),
+      recommended: true,
+    });
+
+    options.push({
+      id: "option_apply_focus_paths_first",
+      title: text("Inspect Target Files First", "先检查目标文件"),
+      summary: text(
+        context.paths.length
+          ? `Start from the requested paths (${summarizePathSet(context.paths.slice(0, 4))}), then convert the findings into a minimal change proposal.`
+          : `Start from the most likely target files in the workspace, then convert the findings into a minimal change proposal.`,
+        context.paths.length
+          ? `先从请求路径（${summarizePathSet(context.paths.slice(0, 4))}）检查，再整理成最小改动提案。`
+          : "先从工作区里最可能的目标文件检查，再整理成最小改动提案。"
+      ),
+      recommended: false,
+    });
+
+    return {
+      summary: text(
+        "Provider apply mode was incompatible in this environment, so I prepared a bounded read-only change-review decision first.",
+        "当前环境下 Provider 的 apply 模式不兼容，因此我先整理了一版受限的只读变更审核决策。"
+      ),
+      recommendedOptionId: "option_apply_pipeline_first",
+      options,
+    };
+  }
 
   if (runtimePathSummary || runtimeFlow) {
     options.push({

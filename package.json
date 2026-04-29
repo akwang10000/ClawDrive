@@ -2,7 +2,7 @@
   "name": "clawdrive-vscode",
   "displayName": "ClawDrive for VS Code",
   "description": "Natural-language IDE agent bridge for OpenClaw.",
-  "version": "0.1.44",
+  "version": "0.1.64-dev9",
   "publisher": "wangtuo",
   "license": "MIT",
   "private": true,
@@ -45,6 +45,10 @@
       {
         "command": "clawdrive.settings",
         "title": "%package.command.settings%"
+      },
+      {
+        "command": "clawdrive.openInClaudeCode",
+        "title": "%package.command.openInClaudeCode%"
       },
       {
         "command": "clawdrive.selftest",
@@ -155,15 +159,16 @@
         "clawdrive.provider.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable provider-backed Codex task execution."
+          "description": "Enable provider-backed task execution."
         },
         "clawdrive.provider.kind": {
           "type": "string",
           "default": "codex",
           "enum": [
-            "codex"
+            "codex",
+            "claude"
           ],
-          "description": "Provider kind used for long-running tasks."
+          "description": "CLI provider used for long-running tasks. Claude Code for VS Code is handoff-only and is not a background task provider."
         },
         "clawdrive.provider.codex.path": {
           "type": "string",
@@ -174,6 +179,21 @@
           "type": "string",
           "default": "",
           "description": "Optional Codex model override for task execution."
+        },
+        "clawdrive.provider.claude.path": {
+          "type": "string",
+          "default": "claude",
+          "description": "Bare executable name or absolute path to the Claude Code CLI. The Claude Code for VS Code extension alone does not satisfy this runtime."
+        },
+        "clawdrive.provider.claude.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Claude Code model override for task execution."
+        },
+        "clawdrive.provider.fallbackToAlternate": {
+          "type": "boolean",
+          "default": false,
+          "description": "When the selected provider is unavailable, automatically fall back to the other built-in provider if it is ready."
         },
         "clawdrive.provider.policyLevel": {
           "type": "string",
@@ -231,6 +251,8 @@
     "test": "npm run test:compile && node --require ./test/setup-vscode-stub.cjs --test out-test/test/**/*.test.js",
     "preselftest": "npm run compile",
     "vscode:prepublish": "npm run compile",
+    "check:package-version": "node scripts/assert-package-version.js",
+    "package:vsix": "npm run check:package-version && npx @vscode/vsce package",
     "selftest": "node scripts/selftest.js"
   },
   "devDependencies": {
