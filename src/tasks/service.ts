@@ -200,6 +200,9 @@ export class TaskService implements vscode.Disposable {
       executionHealth: snapshot.executionHealth,
       runtimeSignals: snapshot.runtimeSignals,
       approval: snapshot.approval,
+      decision: snapshot.decision,
+      summary: snapshot.resultSummary,
+      output: snapshot.lastOutput,
       providerEvidence: snapshot.providerEvidence,
       events: await this.storage.readEvents(taskId),
     };
@@ -656,6 +659,11 @@ export class TaskService implements vscode.Disposable {
     snapshot.error = null;
     snapshot.errorCode = null;
     snapshot.providerEvidence = this.mergeProviderEvidence(snapshot.providerEvidence, result.providerEvidence ?? null);
+    if (result.executionHealth === "degraded" && result.providerEvidence?.runtimeSignals?.length) {
+      for (const runtimeSignal of result.providerEvidence.runtimeSignals) {
+        await this.persistRuntimeSignal(snapshot, runtimeSignal, runtimeSignal.detail);
+      }
+    }
     snapshot.updatedAt = this.options.now();
 
     if (result.decision) {
@@ -1123,6 +1131,8 @@ export class TaskService implements vscode.Disposable {
         incoming.lastAgentMessagePreview ?? existing?.lastAgentMessagePreview ?? null,
       rawStdoutPreview: incoming.rawStdoutPreview ?? existing?.rawStdoutPreview ?? null,
       stdoutEventTail: incoming.stdoutEventTail ?? existing?.stdoutEventTail ?? [],
+      runtimeSignals: incoming.runtimeSignals ?? existing?.runtimeSignals,
+      fallbackReason: incoming.fallbackReason ?? existing?.fallbackReason ?? null,
     };
   }
 

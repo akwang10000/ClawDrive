@@ -197,6 +197,125 @@ test("TaskService returns provider evidence through task.result", async () => {
   ]);
 });
 
+test("TaskService exposes degraded completed fallback evidence without treating it as failure", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-degraded-completed-contract");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask() {
+      return {
+        executionHealth: "degraded",
+        summary: "Completed with fallback output.",
+        output: "Fallback output from provider finalization.",
+        providerEvidence: {
+          sawTurnStarted: true,
+          sawTurnCompleted: false,
+          outputFileStatus: "empty",
+          finalizationPath: "timeout",
+          finalMessageSource: "stdout_scan",
+          lastAgentMessagePreview: "Fallback summary from the final agent message.",
+          rawStdoutPreview: "raw provider stdout preview",
+          stdoutEventTail: ["thread.started", "turn.started", "fallback.completed"],
+          runtimeSignals: [
+            {
+              code: "PROVIDER_RESULT_STALL_WARNING",
+              severity: "degraded",
+              summary: "Provider finalization used a degraded fallback path.",
+              detail: "final message recovered after timeout",
+            },
+          ],
+          fallbackReason: "final message recovered after timeout",
+        },
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "explain the repo", mode: "analyze" });
+  const completed = await waitForTaskState(service, queued.taskId, "completed");
+  const result = await service.getTaskResult(completed.taskId);
+
+  assert.equal(completed.state, "completed");
+  assert.equal(completed.errorCode, null);
+  assert.equal(result.executionHealth, "degraded");
+  assert.equal(result.summary, "Completed with fallback output.");
+  assert.equal(result.output, "Fallback output from provider finalization.");
+  assert.equal(result.providerEvidence?.fallbackReason, "final message recovered after timeout");
+  assert.equal(result.providerEvidence?.finalizationPath, "timeout");
+});
+
+test("TaskService exposes degraded waiting decision fallback evidence without treating it as clean success", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-degraded-decision-contract");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask() {
+      return {
+        executionHealth: "degraded",
+        summary: "Choose a degraded fallback path.",
+        output: "option_a: Use recovered fallback\noption_b: Retry provider",
+        decision: {
+          summary: "Choose a degraded fallback path.",
+          recommendedOptionId: "option_a",
+          options: [
+            { id: "option_a", title: "Use recovered fallback", summary: "Continue with degraded evidence.", recommended: true },
+            { id: "option_b", title: "Retry provider", summary: "Discard fallback and retry.", recommended: false },
+          ],
+        },
+        providerEvidence: {
+          sawTurnStarted: true,
+          sawTurnCompleted: false,
+          outputFileStatus: "empty",
+          finalizationPath: "timeout",
+          finalMessageSource: "stdout_scan",
+          lastAgentMessagePreview: "Recovered waiting decision preview.",
+          rawStdoutPreview: "raw waiting decision stdout preview",
+          stdoutEventTail: ["thread.started", "turn.started", "decision.fallback"],
+          runtimeSignals: [
+            {
+              code: "PROVIDER_PLAN_OUTPUT_RETRY",
+              severity: "degraded",
+              summary: "Plan output was recovered through a degraded fallback path.",
+              detail: "waiting decision recovered after retry",
+            },
+          ],
+          fallbackReason: "waiting decision recovered after retry",
+        },
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "give me two next-step options", mode: "plan" });
+  const waiting = await waitForTaskState(service, queued.taskId, "waiting_decision");
+  const result = await service.getTaskResult(waiting.taskId);
+
+  assert.equal(waiting.errorCode, null);
+  assert.equal(result.executionHealth, "degraded");
+  assert.equal(result.snapshot.executionHealth, "degraded");
+  assert.equal(result.summary, "Choose a degraded fallback path.");
+  assert.equal(result.output, "option_a: Use recovered fallback\noption_b: Retry provider");
+  assert.ok(result.decision);
+  assert.equal(result.providerEvidence?.fallbackReason, "waiting decision recovered after retry");
+  assert.equal(result.providerEvidence?.runtimeSignals?.[0]?.code, "PROVIDER_PLAN_OUTPUT_RETRY");
+});
+
 test("TaskService allows read-only analyze prompts that mention do not modify", async () => {
   const rootPath = await makeTempDir("clawdrive-task-analyze-readonly");
   setWorkspaceRoot(rootPath);

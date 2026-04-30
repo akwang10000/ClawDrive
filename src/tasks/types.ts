@@ -72,6 +72,13 @@ export interface TaskRuntimeSignal {
   lastSeenAt: string;
 }
 
+export interface TaskProviderEvidenceRuntimeSignal {
+  code: string;
+  severity: TaskRuntimeSignalSeverity;
+  summary: string;
+  detail?: string;
+}
+
 export interface TaskProviderEvidence {
   sawTurnStarted: boolean;
   sawTurnCompleted: boolean;
@@ -87,6 +94,8 @@ export interface TaskProviderEvidence {
   lastAgentMessagePreview: string | null;
   rawStdoutPreview?: string | null;
   stdoutEventTail: string[];
+  runtimeSignals?: TaskProviderEvidenceRuntimeSignal[];
+  fallbackReason?: string | null;
 }
 
 export interface TaskSnapshot {
@@ -127,6 +136,9 @@ export interface TaskResultPayload {
   executionHealth: TaskExecutionHealth;
   runtimeSignals: TaskRuntimeSignal[];
   approval: TaskApprovalRequest | null;
+  decision: TaskDecisionRequest | null;
+  summary: string | null;
+  output: string | null;
   providerEvidence: TaskProviderEvidence | null;
   events: TaskEventRecord[];
 }
@@ -182,6 +194,7 @@ export interface TaskRunResult {
   sessionId?: string | null;
   summary: string;
   output?: string | null;
+  executionHealth?: TaskExecutionHealth;
   decision?: TaskDecisionRequest | null;
   approval?: TaskApprovalRequest | null;
   providerEvidence?: Partial<TaskProviderEvidence> | null;
