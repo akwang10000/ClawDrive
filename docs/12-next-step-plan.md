@@ -29,39 +29,37 @@ What is already in place:
 
 This is enough for repeatable demos and focused operator testing.
 
-The main remaining risk is not missing surface area.
-It is correctness drift at the route, provider-finalization, and task-contract boundary.
+The main remaining risk is now operator clarity: users and maintainers need better visibility into task state, degraded results, handoff boundaries, and recovery options without reading raw lifecycle payloads.
 
 ## Next Milestone
 
 Milestone name:
 
-- Route, Provider, And Task Contract Hardening
+- Operator UX And State Visibility
 
 Milestone goal:
 
-- make route selection, Claude provider finalization, plan-mode stability, and task-result semantics more predictable before widening product scope again
+- make task state, provider health, degraded fallback, and recovery paths easier to understand from the existing command and activity surfaces without changing the stabilized task contract
 
 ## Product Reason
 
 This is the highest-leverage next step because:
 
-- route mistakes and task/result mismatches erode trust faster than narrow feature gaps
-- Claude provider runs are implemented but still more compatibility-heavy than the stable task contract wants them to be
-- `plan` tasks are more likely than `analyze` tasks to degrade or stall under quiet-provider conditions
-- docs are now materially behind code reality in provider coverage and degraded-completion semantics
+- the route/provider/task contract is now more stable, so the next trust gap is how clearly that contract is surfaced to operators
+- degraded-but-useful results need to be visibly distinguishable from clean provider completions
+- handoff, diagnose, continue, decision, approval, and cancellation paths should be easy to understand without inspecting raw JSON
+- better state visibility improves focused testing before expanding write surfaces or new command families
 
 ## Boundary Reminder
 
-This milestone is still a hardening pass on the existing mainline, not a scope expansion.
+This milestone is a UX and observability pass on the existing mainline, not a task-contract redesign.
 
 Keep inside ClawDrive:
 
-- deterministic route selection
-- deterministic provider finalization and failure normalization
-- deterministic task persistence and result semantics
-- operator-facing status consistency
-- documentation honesty
+- clearer task and provider status presentation
+- clearer degraded-result and fallback messaging
+- clearer recovery actions for waiting, interrupted, failed, and degraded tasks
+- documentation and operator guidance that match implemented behavior
 
 Do not expand into:
 
@@ -69,93 +67,88 @@ Do not expand into:
 - new public command families
 - multi-root workspace support
 - repository-scale autonomous reasoning beyond the grounded inspect ceiling
+- new provider lifecycle states when existing state, health, signals, and evidence are sufficient
 
 ## Scope
 
-### 1. Route Precision
+### 1. Task State Visibility
 
-Tighten route selection so broad read-only analysis stays on `analyze` unless option/tradeoff intent is explicit.
-
-Target behavior:
-
-- provider architecture questions stay in inspect or analyze
-- explicit options/tradeoffs prompts route to `plan`
-- read-only phrasing alone does not imply `plan`
-- diagnose remains the path for status, readiness, connection, and failure-debugging prompts
-
-### 2. Claude Provider Finalization
-
-Make Claude provider runs settle around one stable terminal contract.
+Improve how current task lifecycle and execution health are presented to operators.
 
 Target behavior:
 
-- once a usable terminal semantic payload exists, late/noisy runtime conditions do not discard it
-- apply retry paths preserve consistent provider evidence
-- plan-mode quiet budgets are explicit and mode-aware
-- provider failures still surface clearly when there is no usable result
+- users can tell whether a task is running, waiting, completed, degraded, failed, cancelled, or interrupted
+- degraded completion is summarized as useful-but-fallback-backed rather than as a silent success
+- provider evidence remains diagnostic context and does not leak into normal output unless it helps explain degraded behavior
 
-### 3. Task Result Semantics
+### 2. Recovery And Continuation UX
 
-Clarify what successful degraded completion means without widening lifecycle states.
+Make next actions obvious for resumable or recoverable tasks.
 
 Target behavior:
 
-- bounded local fallback may still finish as `completed`
-- degraded completion is made explicit via `executionHealth`, `runtimeSignals`, and `providerEvidence`
-- callers can distinguish provider success from provider-failed-but-locally-completed results
+- waiting decision and waiting approval states show the expected user action
+- interrupted and failed states show whether continue, diagnose, or restart is the safer next step
+- cancellation and recovery messages stay plain-language and task-oriented
+
+### 3. Provider And Handoff Clarity
+
+Keep background provider execution and Claude VS Code handoff visually and textually distinct.
+
+Target behavior:
+
+- provider readiness and runtime-health diagnostics are easy to find
+- handoff commands are presented as handoff-only, not background provider execution
+- diagnose output distinguishes connection, readiness, task state, and runtime signals
 
 ### 4. Documentation Alignment
 
-Bring command/task docs back to current reality.
+Keep operator docs aligned with the current UX contract.
 
 Target behavior:
 
-- docs stop claiming Codex is the only implemented provider
-- docs distinguish background providers from Claude Code handoff
-- docs explain degraded `completed` results honestly
-- repo decision logs stay aligned with the hardening work
+- docs explain how to interpret task health and degraded fallback
+- docs explain when to continue, diagnose, cancel, or start a new task
+- docs continue to avoid implying unsupported write or provider capabilities
 
 ## Work Packages
 
 Implementation should be split into these work packages:
 
-1. Route classifier hardening
+1. Task state presentation review
 
-- narrow `plan` detection to explicit option/tradeoff intent
-- add regression tests for analyze/plan/diagnose boundary prompts
+- audit current activity view, command responses, and result summaries for unclear state or health wording
+- identify the smallest wording or presentation changes that improve operator understanding
 
-2. Claude provider hardening
+2. Recovery action clarity
 
-- normalize finalization around usable terminal payloads
-- keep apply retry paths but align their evidence shape
-- make quiet budgets mode-aware instead of uniformly extended
+- review waiting, interrupted, failed, cancelled, and degraded task flows
+- make recommended next actions consistent across route responses and task result surfaces
 
-3. Task semantics hardening
+3. Provider and handoff visibility
 
-- preserve fallback evidence on degraded completion
-- add regression tests for `completed + degraded fallback` semantics
+- verify diagnose and handoff messaging reflect the stabilized provider contract
+- keep Claude VS Code handoff separate from background task-provider status
 
 4. Documentation alignment
 
-- update routing docs
-- update task semantics docs
-- update command-surface docs
-- record settled repo-level decisions in `AGENTS.md`
+- update operator-facing docs affected by UX wording changes
+- keep command-surface, routing, and task-semantics docs consistent with implemented behavior
 
 5. Validation
 
-- keep routing/provider/task regression tests green
-- keep the full test suite green
+- run focused tests for any changed task/status behavior
+- run lightweight docs and packaging checks for docs-only changes
 
 ## Sequence
 
 Recommended implementation order:
 
-1. classifier hardening
-2. Claude provider finalization hardening
-3. fallback/result semantics hardening
-4. regression tests
-5. documentation updates
+1. audit current operator-facing task/status output
+2. tighten wording and presentation for task health and recovery actions
+3. verify provider diagnose and handoff clarity
+4. update docs to match any wording changes
+5. run focused validation
 
 ## Explicitly Not In Scope
 
@@ -163,48 +156,47 @@ Do not expand into these areas in this milestone:
 
 - broader `apply` operation types
 - git/test/debug/terminal workflows
-- provider feature parity beyond stabilizing the existing Codex and Claude paths
+- new provider feature parity work
 - new repository indexing or language-intelligence features
+- new lifecycle states or task result schema changes unless a concrete operator-blocking issue requires them
 
 Also avoid these failure modes:
 
-- overfitting route rules to one prompt wording
-- adding new lifecycle states when existing state + health + evidence can express the result clearly
-- discarding usable terminal provider payloads because of late noisy runtime conditions
-- using hardening work as an excuse to widen command surface
+- hiding degraded fallback behind generic success wording
+- exposing raw provider evidence where plain-language summaries are enough
+- treating Claude VS Code handoff as a background task provider
+- using UX cleanup as an excuse to widen command surface
 
 ## Acceptance
 
 This milestone is successful when:
 
-- provider-architecture prompts no longer drift into `plan` or `diagnose`
-- explicit option/tradeoff prompts route to `plan`
-- Claude runs with usable terminal payloads settle consistently despite late stderr/runtime noise
-- `plan` tasks have explicit quieter budgets than other modes
-- read-only fallback completes as degraded `completed` or degraded `waiting_decision` with clear evidence
-- docs no longer claim Codex is the only implemented provider
+- task lists, status responses, and result summaries make lifecycle and execution health easy to distinguish
+- degraded fallback results are visibly different from clean provider completions
+- waiting, interrupted, failed, cancelled, and degraded tasks present clear next actions
+- provider readiness/runtime health and Claude VS Code handoff are described consistently
+- docs remain aligned with the implemented command and task behavior
 
 ## Validation Checklist
 
 Automated checks should cover:
 
-- analyze/plan/diagnose route boundary prompts
-- Claude apply schema-retry and empty-output retry behavior
-- Claude finalization behavior when late stderr appears after a usable payload exists
-- degraded fallback semantics in task results
-- existing grounded inspect and provider-backed task tests still pass
+- focused tests for any changed task/status behavior
+- existing grounded inspect and provider-backed task tests for unchanged contract behavior
+- docs/package checks for documentation-only changes
 
 Operator checks should cover:
 
-- a provider-architecture question reads like normal repository analysis, not diagnosis
-- a plan prompt still yields options with a recommended choice
-- a degraded fallback result is visibly distinguishable from a clean provider completion
-- Claude Code handoff remains separate from background provider semantics
+- a clean provider completion reads as a normal completed task
+- a degraded fallback result explains that bounded local fallback produced the useful result
+- a waiting task clearly asks for a decision or approval
+- a failed or interrupted task points to diagnose, continue, or restart as appropriate
+- Claude Code handoff remains visibly separate from background provider execution
 
 ## After This Milestone
 
 After this milestone, the next likely branch is one of:
 
-- broader operator UX cleanup and state visibility
 - more grounded inspect refinements at repository scale
-- wider apply capability once the task contract is stable enough
+- wider apply capability once the operator surfaces and task contract are stable enough
+- targeted provider compatibility improvements based on observed operator friction
