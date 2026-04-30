@@ -671,14 +671,14 @@ export class TaskService implements vscode.Disposable {
       snapshot.decision = result.decision;
       snapshot.approval = null;
       snapshot.summary = taskWaitingSummary(result.decision.options.length);
-      snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "waiting_decision");
+      snapshot.executionHealth = this.deriveResultExecutionHealth(result, "waiting_decision", snapshot.providerEvidence, snapshot.runtimeSignals);
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "waiting_decision", snapshot.summary, result.decision.summary);
     } else if (result.approval) {
       snapshot.state = "waiting_approval";
       snapshot.approval = result.approval;
       snapshot.summary = taskWaitingApprovalSummary(result.approval.operations.length);
-      snapshot.executionHealth = this.deriveExecutionHealth(snapshot.runtimeSignals, "waiting_approval");
+      snapshot.executionHealth = this.deriveResultExecutionHealth(result, "waiting_approval", snapshot.providerEvidence, snapshot.runtimeSignals);
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "waiting_approval", snapshot.summary, taskApprovalSummary(result.approval));
     } else {
@@ -688,7 +688,7 @@ export class TaskService implements vscode.Disposable {
         snapshot.approval = null;
       }
       snapshot.summary = result.summary;
-      snapshot.executionHealth = this.deriveCompletedExecutionHealth(snapshot.runtimeSignals, snapshot.providerEvidence);
+      snapshot.executionHealth = this.deriveResultExecutionHealth(result, "completed", snapshot.providerEvidence, snapshot.runtimeSignals);
       await this.storage.saveSnapshot(snapshot);
       await this.appendEvent(snapshot, "completed", snapshot.summary);
     }
@@ -1134,6 +1134,21 @@ export class TaskService implements vscode.Disposable {
       runtimeSignals: incoming.runtimeSignals ?? existing?.runtimeSignals,
       fallbackReason: incoming.fallbackReason ?? existing?.fallbackReason ?? null,
     };
+  }
+
+  private deriveResultExecutionHealth(
+    result: TaskRunResult,
+    state: TaskState,
+    providerEvidence: TaskProviderEvidence | null,
+    runtimeSignals: TaskRuntimeSignal[]
+  ): TaskExecutionHealth {
+    if (result.executionHealth === "degraded") {
+      return "degraded";
+    }
+    if (state === "completed") {
+      return this.deriveCompletedExecutionHealth(runtimeSignals, providerEvidence);
+    }
+    return this.deriveExecutionHealth(runtimeSignals, state);
   }
 
   private deriveCompletedExecutionHealth(

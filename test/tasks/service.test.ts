@@ -252,6 +252,43 @@ test("TaskService exposes degraded completed fallback evidence without treating 
   assert.equal(result.providerEvidence?.finalizationPath, "timeout");
 });
 
+test("TaskService keeps degraded completed health when provider omits runtime signals", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-degraded-no-signals-contract");
+  setWorkspaceRoot(rootPath);
+
+  const provider = new FakeProvider({
+    async startTask() {
+      return {
+        executionHealth: "degraded",
+        summary: "Completed with degraded provider health.",
+        output: "Usable output from a degraded provider path.",
+        providerEvidence: {
+          fallbackReason: "provider reported degraded health without signal details",
+        },
+      };
+    },
+    async resumeTask() {
+      throw new Error("not used");
+    },
+  });
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () => provider,
+  });
+  await service.initialize();
+
+  const queued = await service.startTask({ prompt: "explain the repo", mode: "analyze" });
+  const completed = await waitForTaskState(service, queued.taskId, "completed");
+  const result = await service.getTaskResult(completed.taskId);
+
+  assert.equal(completed.state, "completed");
+  assert.equal(completed.runtimeSignals.length, 0);
+  assert.equal(completed.executionHealth, "degraded");
+  assert.equal(result.executionHealth, "degraded");
+  assert.equal(result.providerEvidence?.fallbackReason, "provider reported degraded health without signal details");
+});
+
 test("TaskService exposes degraded waiting decision fallback evidence without treating it as clean success", async () => {
   const rootPath = await makeTempDir("clawdrive-task-degraded-decision-contract");
   setWorkspaceRoot(rootPath);
