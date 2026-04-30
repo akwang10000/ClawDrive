@@ -150,13 +150,13 @@ function extractPromptDirectories(prompt: string): string[] {
     return directories;
   }
 
-  const bareMatches = prompt.match(/\b(src|docs|out|test|media|client|server|extension)\b/gi) ?? [];
+  const bareMatches = prompt.match(/\.vscode\b|\b(src|docs|out|test|media|client|server|extension)\b/gi) ?? [];
   return [...new Set(bareMatches.map((value) => value.trim()))];
 }
 
 function hasExplicitDirectoryReference(prompt: string, directory: string): boolean {
   const escapedDirectory = escapeRegExp(directory);
-  return new RegExp(`\\b(the\\s+)?${escapedDirectory}\\s+(directory|folder)\\b|\\b(directory|folder)\\s+${escapedDirectory}\\b`, "i").test(prompt);
+  return new RegExp(`(?:^|\\s)(the\\s+)?${escapedDirectory}\\s+(directory|folder)\\b|\\b(directory|folder)\\s+${escapedDirectory}(?=\\s|$|[.,!?;:])`, "i").test(prompt);
 }
 
 function escapeRegExp(value: string): string {

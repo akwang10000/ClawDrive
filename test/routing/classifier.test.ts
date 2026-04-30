@@ -137,6 +137,10 @@ test("classifier maps direct inspect prompts conservatively", () => {
     type: "inspect",
     action: { type: "directory_summary", path: "src" },
   });
+  assert.deepEqual(classifyIntent("Summarize the .vscode directory.", []), {
+    type: "inspect",
+    action: { type: "directory_summary", path: ".vscode" },
+  });
   assert.deepEqual(classifyIntent("列出 src", ["src"]), {
     type: "inspect",
     action: { type: "directory", path: "src" },
