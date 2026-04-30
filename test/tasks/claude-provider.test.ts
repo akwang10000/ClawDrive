@@ -141,6 +141,46 @@ test("ClaudeCliProvider parses analyze output from Claude structured_output enve
   assert.ok(!runtimeSignals.some((signal) => signal.code === "PROVIDER_ANALYZE_DEGRADED_OUTPUT"));
 });
 
+test("ClaudeCliProvider preserves a usable analyze payload when stderr reports late noise", async () => {
+  const provider = new ClaudeCliProvider(makeConfig({ providerKind: "claude" }));
+  stubProviderEnvironment(provider);
+
+  const runtimeSignals: Array<{ code: string; severity: string; summary: string }> = [];
+  (provider as unknown as { runCommand: Function }).runCommand = async () => ({
+    stdout: JSON.stringify({
+      type: "result",
+      subtype: "success",
+      session_id: "session-late-noise",
+      result: '{"summary":"Repo overview","details":"Provider finalization completed with a usable payload."}',
+    }),
+    stderr: "WARN late provider cleanup message after result\n",
+    exitCode: 0,
+  });
+
+  const result = await provider.startTask(
+    {
+      taskId: "task-analyze-late-noise",
+      mode: "analyze",
+      prompt: "Explain provider finalization",
+      paths: [],
+      workspacePath: null,
+    },
+    {
+      ...noOpCallbacks(),
+      onRuntimeSignal(signal: { code: string; severity: string; summary: string }) {
+        runtimeSignals.push(signal);
+      },
+    },
+    new AbortController().signal
+  );
+
+  assert.equal(result.summary, "Repo overview");
+  assert.match(result.output ?? "", /usable payload/i);
+  assert.equal(result.sessionId, "session-late-noise");
+  assert.equal(result.providerEvidence?.finalMessageSource, "direct_message");
+  assert.ok(!runtimeSignals.some((signal) => signal.severity === "fatal"));
+});
+
 
 test("ClaudeCliProvider parses plan payload from embedded JSON in a Claude result envelope", async () => {
   const provider = new ClaudeCliProvider(makeConfig({ providerKind: "claude" }));
@@ -1792,6 +1832,25 @@ test("ClaudeCliProvider uses mode-aware quiet budgets and keeps resume retries o
   assert.equal(planResumeRetryTimings.warningMs, 5_000);
   assert.equal(applyTimings.failureMs, 10_000);
   assert.equal(applyTimings.warningMs, 5_000);
+});
+
+test("ClaudeCliProvider uses longer quiet budgets for initial plan runs", () => {
+  const provider = new ClaudeCliProvider(makeConfig({ providerKind: "claude", tasksDefaultTimeoutMs: 30_000 }));
+  const timings = (provider as unknown as {
+    getRunStallTimings(context: { mode: "analyze" | "plan" | "apply" }, preferResumeRetry?: boolean): {
+      warningMs: number;
+      failureMs: number;
+    };
+  }).getRunStallTimings({ mode: "plan" });
+  const analyzeTimings = (provider as unknown as {
+    getRunStallTimings(context: { mode: "analyze" | "plan" | "apply" }, preferResumeRetry?: boolean): {
+      warningMs: number;
+      failureMs: number;
+    };
+  }).getRunStallTimings({ mode: "analyze" });
+
+  assert.ok(timings.warningMs > analyzeTimings.warningMs);
+  assert.ok(timings.failureMs > analyzeTimings.failureMs);
 });
 
 
