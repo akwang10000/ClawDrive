@@ -139,6 +139,12 @@ The routing layer should follow these rules in order.
 7. When a task must pause for a choice, surface the choice in plain language and keep the recommended option obvious.
 8. Route into diagnosis only for explicit status, readiness, connection, or failure-debugging prompts. Architecture questions that mention `provider` still belong to inspect or analyze.
 
+### Route Boundaries
+
+Read-only analysis prompts route to local inspect or provider-backed analyze unless the user explicitly asks for options, tradeoffs, or a decision point. Explicit option/tradeoff prompts route to plan. Provider readiness, connection state, failed task, and runtime-health prompts route to diagnose. Claude Code for VS Code handoff prompts route to handoff and do not start background tasks.
+
+Provider architecture and code-explanation prompts are analysis prompts unless the user explicitly asks to decide among implementation options. Explicit directory summaries remain grounded inspect requests, including dotted directories such as `.vscode`.
+
 ## Provider-Neutral Execution Model
 
 This routing contract must not depend on Codex-specific wording.

@@ -15,6 +15,8 @@ It should answer:
 
 The product mainline is implemented, but the main risk is now cross-layer correctness drift rather than missing happy-path surface area.
 
+Status note: this milestone is now completed through the route/provider/task contract hardening plan in `docs/superpowers/plans/2026-04-30-route-provider-task-contract-hardening.md`. The next recommended milestone is broader operator UX cleanup and state visibility, while keeping the stabilized task contract unchanged.
+
 What is already in place:
 
 - `vscode.agent.route` is the natural-language entrypoint

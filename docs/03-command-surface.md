@@ -94,6 +94,8 @@ The current implementation reality is:
 - readiness depends on enablement, executable discovery, and runnable CLI state
 - Claude Code for VS Code handoff is separate from background task execution; it is an explicit handoff route, not a long-running task provider
 
+ClawDrive supports provider-backed long-running tasks through Codex CLI and Claude Code CLI. Claude Code for VS Code is exposed as a handoff command (`clawdrive.openInClaudeCode`) and is not used as the background task provider.
+
 This is acceptable for v1 as long as the public task API does not need to change to add or refine providers later.
 
 ## Not Implemented Yet

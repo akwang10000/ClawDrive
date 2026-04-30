@@ -2,6 +2,8 @@ node_modules/
 dist/
 out/
 out-test/
+# Local ClawDrive runtime task history
+/tasks/
 selftest-report.json
 *.vsix
 *.log

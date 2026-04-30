@@ -5,6 +5,8 @@ src/**
 test/**
 scripts/**
 out-test/**
+# Local ClawDrive runtime task history
+/tasks/
 selftest-report.json
 full-test.txt
 focused-test.txt
