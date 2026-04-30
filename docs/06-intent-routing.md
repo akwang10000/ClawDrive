@@ -158,8 +158,7 @@ The stable layers should be:
 
 Provider-specific logic belongs behind that layer.
 
-The first implementation may support only Codex.
-The design should still permit later adapters such as Claude without changing the OpenClaw-facing conversation model.
+Current background providers are Codex CLI and Claude Code CLI. The OpenClaw-facing conversation model should remain provider-neutral: future adapters must plug into the same intent, task-mode, lifecycle, decision, and response contract instead of changing routing behavior or user-visible protocol shape.
 
 ## Assistant Response Contract
 
