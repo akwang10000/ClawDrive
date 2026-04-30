@@ -16,6 +16,10 @@ Add new entries at the top of the decision log.
 
 ## Current Working Agreements
 
+### Communication Language
+
+- Agents may reason internally in English, but all user-facing questions and answers must be in Chinese.
+
 ### Product Mainline
 
 - The main user-facing entrypoint is `vscode.agent.route`.
