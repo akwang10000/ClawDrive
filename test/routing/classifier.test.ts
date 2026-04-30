@@ -43,6 +43,41 @@ test("classifier keeps broad read-only analysis prompts on analyze unless option
     type: "analyze",
   });
 });
+test("classifier keeps provider architecture analysis out of plan and diagnose", () => {
+  assert.deepEqual(classifyIntent("Analyze the Claude provider architecture and explain the task flow.", []), {
+    type: "analyze",
+  });
+  assert.deepEqual(classifyIntent("Review the provider finalization path without changing files.", []), {
+    type: "analyze",
+  });
+  assert.deepEqual(classifyIntent("Compare provider evidence handling across code and docs, but do not propose options.", []), {
+    type: "analyze",
+  });
+});
+
+test("classifier routes explicit decision and tradeoff requests to plan", () => {
+  assert.deepEqual(classifyIntent("Give me two implementation options for hardening provider finalization.", []), {
+    type: "plan",
+  });
+  assert.deepEqual(classifyIntent("Compare options and tradeoffs before changing the router.", []), {
+    type: "plan",
+  });
+  assert.deepEqual(classifyIntent("Let me decide between safe next-step options.", []), {
+    type: "plan",
+  });
+});
+
+test("classifier keeps operational provider health prompts on diagnose", () => {
+  assert.deepEqual(classifyIntent("Why did the Claude provider task fail last time?", []), {
+    type: "diagnose",
+  });
+  assert.deepEqual(classifyIntent("Check provider readiness and connection status.", []), {
+    type: "diagnose",
+  });
+  assert.deepEqual(classifyIntent("Diagnose the latest degraded task result.", []), {
+    type: "diagnose",
+  });
+});
 
 
 

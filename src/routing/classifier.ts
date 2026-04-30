@@ -104,7 +104,7 @@ function classifyInspectAction(prompt: string, paths: string[]): InspectAction |
   if (promptPaths.length === 1 && matchesAny(prompt, fileReadPatterns)) {
     return { type: "file", path: promptPaths[0] };
   }
-  if (promptDirectories.length === 1 && matchesAny(prompt, groundedSummaryPatterns)) {
+  if (promptDirectories.length === 1 && matchesAny(prompt, groundedSummaryPatterns) && hasExplicitDirectoryReference(prompt, promptDirectories[0])) {
     return { type: "directory_summary", path: promptDirectories[0] };
   }
   if (promptDirectories.length === 1 && matchesAny(prompt, directoryPatterns)) {
@@ -152,6 +152,15 @@ function extractPromptDirectories(prompt: string): string[] {
 
   const bareMatches = prompt.match(/\b(src|docs|out|test|media|client|server|extension)\b/gi) ?? [];
   return [...new Set(bareMatches.map((value) => value.trim()))];
+}
+
+function hasExplicitDirectoryReference(prompt: string, directory: string): boolean {
+  const escapedDirectory = escapeRegExp(directory);
+  return new RegExp(`\\b(the\\s+)?${escapedDirectory}\\s+(directory|folder)\\b|\\b(directory|folder)\\s+${escapedDirectory}\\b`, "i").test(prompt);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function collectPathCandidates(prompt: string): string[] {
