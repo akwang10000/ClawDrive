@@ -4,6 +4,7 @@ out/
 out-test/
 # Local ClawDrive runtime task history
 /tasks/
+.worktrees/
 selftest-report.json
 *.vsix
 *.log
