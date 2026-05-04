@@ -735,6 +735,98 @@ test("TaskService deleteTask rejects non-terminal tasks and leaves them untouche
   assert.ok(await storage.readSnapshot("interrupted-task"));
 });
 
+test("TaskService deleteTerminalTasks removes only terminal task history", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-delete-terminal-batch");
+  setWorkspaceRoot(rootPath);
+
+  const storage = new TaskStorage(rootPath, 20);
+  await storage.initialize();
+  for (const snapshot of [
+    makeSnapshot({ taskId: "completed-task", state: "completed", updatedAt: "2026-03-21T12:07:00.000Z" }),
+    makeSnapshot({ taskId: "failed-task", state: "failed", updatedAt: "2026-03-21T12:06:00.000Z" }),
+    makeSnapshot({ taskId: "cancelled-task", state: "cancelled", updatedAt: "2026-03-21T12:05:00.000Z" }),
+    makeSnapshot({ taskId: "waiting-decision-task", state: "waiting_decision", updatedAt: "2026-03-21T12:04:00.000Z" }),
+    makeSnapshot({ taskId: "waiting-approval-task", state: "waiting_approval", updatedAt: "2026-03-21T12:03:00.000Z" }),
+    makeSnapshot({ taskId: "interrupted-task", state: "interrupted", updatedAt: "2026-03-21T12:02:00.000Z" }),
+  ]) {
+    await storage.saveSnapshot(snapshot);
+  }
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () =>
+      new FakeProvider({
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      }),
+  });
+  await service.initialize();
+
+  const result = await service.deleteTerminalTasks();
+
+  assert.deepEqual(result, { requested: 3, completed: 3, skipped: 0 });
+  assert.deepEqual(
+    service.listAllTasks().map((task) => task.taskId),
+    ["waiting-decision-task", "waiting-approval-task", "interrupted-task"]
+  );
+  assert.equal(await storage.readSnapshot("completed-task"), null);
+  assert.equal(await storage.readSnapshot("failed-task"), null);
+  assert.equal(await storage.readSnapshot("cancelled-task"), null);
+  assert.ok(await storage.readSnapshot("waiting-decision-task"));
+  assert.ok(await storage.readSnapshot("waiting-approval-task"));
+  assert.ok(await storage.readSnapshot("interrupted-task"));
+});
+
+test("TaskService cancelActiveTasks cancels only active and resumable tasks", async () => {
+  const rootPath = await makeTempDir("clawdrive-task-cancel-active-batch");
+  setWorkspaceRoot(rootPath);
+
+  const storage = new TaskStorage(rootPath, 20);
+  await storage.initialize();
+  for (const snapshot of [
+    makeSnapshot({ taskId: "queued-task", state: "queued", updatedAt: "2026-03-21T12:08:00.000Z" }),
+    makeSnapshot({ taskId: "running-task", state: "running", updatedAt: "2026-03-21T12:07:00.000Z" }),
+    makeSnapshot({ taskId: "waiting-decision-task", state: "waiting_decision", updatedAt: "2026-03-21T12:06:00.000Z" }),
+    makeSnapshot({ taskId: "waiting-approval-task", state: "waiting_approval", updatedAt: "2026-03-21T12:05:00.000Z" }),
+    makeSnapshot({ taskId: "interrupted-task", state: "interrupted", updatedAt: "2026-03-21T12:04:00.000Z" }),
+    makeSnapshot({ taskId: "completed-task", state: "completed", updatedAt: "2026-03-21T12:03:00.000Z" }),
+    makeSnapshot({ taskId: "failed-task", state: "failed", updatedAt: "2026-03-21T12:02:00.000Z" }),
+    makeSnapshot({ taskId: "cancelled-task", state: "cancelled", updatedAt: "2026-03-21T12:01:00.000Z" }),
+  ]) {
+    await storage.saveSnapshot(snapshot);
+  }
+
+  const service = new TaskService(makeExtensionContext(rootPath), {
+    getConfig: () => makeConfig(),
+    createProvider: () =>
+      new FakeProvider({
+        async startTask() {
+          throw new Error("not used");
+        },
+        async resumeTask() {
+          throw new Error("not used");
+        },
+      }),
+  });
+  await service.initialize({ probeProvider: false });
+
+  const result = await service.cancelActiveTasks();
+
+  assert.deepEqual(result, { requested: 5, completed: 5, skipped: 0 });
+  assert.equal(service.getTask("queued-task").state, "cancelled");
+  assert.equal(service.getTask("running-task").state, "cancelled");
+  assert.equal(service.getTask("waiting-decision-task").state, "cancelled");
+  assert.equal(service.getTask("waiting-approval-task").state, "cancelled");
+  assert.equal(service.getTask("interrupted-task").state, "cancelled");
+  assert.equal(service.getTask("completed-task").state, "completed");
+  assert.equal(service.getTask("failed-task").state, "failed");
+  assert.equal(service.getTask("cancelled-task").state, "cancelled");
+});
+
 test("TaskService drives apply through waiting_decision -> waiting_approval -> completed", async () => {
   const rootPath = await makeTempDir("clawdrive-task-apply");
   setWorkspaceRoot(rootPath);

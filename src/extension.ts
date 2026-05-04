@@ -17,6 +17,7 @@ import { showSettingsPanel } from "./settings-panel";
 import { ClawDriveStatusBar } from "./status-bar";
 import { runSelftest } from "./selftest-runner";
 import { TaskService } from "./tasks/service";
+import type { TaskBatchActionResult } from "./tasks/types";
 
 // Minimal comment change for apply-flow verification.
 class ClawDriveRuntime {
@@ -165,6 +166,14 @@ class ClawDriveRuntime {
     await this.taskService.deleteTask(taskId);
   }
 
+  async cancelActiveTasks(): Promise<TaskBatchActionResult> {
+    return await this.taskService.cancelActiveTasks();
+  }
+
+  async clearFinishedTasks(): Promise<TaskBatchActionResult> {
+    return await this.taskService.deleteTerminalTasks();
+  }
+
   async approveTask(taskId: string): Promise<void> {
     await this.activityProvider.approveTask(taskId);
   }
@@ -201,6 +210,7 @@ class ClawDriveRuntime {
       providerStatus: this.providerStatusLabel(),
       commands: getRegisteredCommands(),
       taskCounts: taskSnapshot.taskCounts,
+      bulkActions: taskSnapshot.bulkActions,
       tasks: taskSnapshot.tasks,
     };
   }
@@ -241,6 +251,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         onDeleteTask: async (taskId: string) => {
           await runtime.deleteTask(taskId);
         },
+        onCancelActiveTasks: async () => await runtime.cancelActiveTasks(),
+        onClearFinishedTasks: async () => await runtime.clearFinishedTasks(),
       });
     }),
     vscode.commands.registerCommand("clawdrive.connect", () => runtime.connect()),

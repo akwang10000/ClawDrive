@@ -176,6 +176,12 @@ export interface TaskListParams {
   limit?: number;
 }
 
+export interface TaskBatchActionResult {
+  requested: number;
+  completed: number;
+  skipped: number;
+}
+
 export interface TaskResponseInput {
   optionId?: string;
   message?: string;

@@ -49,10 +49,15 @@ export interface DashboardTaskCounts {
   byState: DashboardTaskCountEntry[];
 }
 
+export interface DashboardTaskBulkActions {
+  cancellable: number;
+  deletable: number;
+}
+
 export function buildDashboardTaskSnapshot(
   tasks: TaskSnapshot[],
   limit = 20
-): { taskCounts: DashboardTaskCounts; tasks: DashboardTaskItem[] } {
+): { taskCounts: DashboardTaskCounts; bulkActions: DashboardTaskBulkActions; tasks: DashboardTaskItem[] } {
   const safeLimit = Math.max(1, limit);
   const sorted = [...tasks].sort(compareDashboardTasks);
   const visible = sorted.slice(0, safeLimit);
@@ -68,6 +73,10 @@ export function buildDashboardTaskSnapshot(
         label: taskStateLabel(state),
         count: tasks.filter((task) => task.state === state).length,
       })),
+    },
+    bulkActions: {
+      cancellable: tasks.filter((task) => isActiveDashboardTaskState(task.state)).length,
+      deletable: tasks.filter((task) => isTerminalDashboardTaskState(task.state)).length,
     },
     tasks: visible.map((task) => ({
       taskId: task.taskId,

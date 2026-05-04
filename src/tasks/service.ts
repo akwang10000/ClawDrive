@@ -32,6 +32,7 @@ import {
 } from "./text";
 import type {
   ProviderStatusInfo,
+  TaskBatchActionResult,
   TaskContinuationCandidate,
   TaskExecutionHealth,
   TaskEventRecord,
@@ -302,7 +303,7 @@ export class TaskService implements vscode.Disposable {
       this.cancelActiveRun("cancelled");
       return await this.waitForTaskSettlement(taskId, ["cancelled", "failed", "interrupted"]);
     }
-    if (snapshot.state === "completed" || snapshot.state === "failed" || snapshot.state === "cancelled") {
+    if (!this.canCancelTask(snapshot.state)) {
       return snapshot;
     }
     snapshot.state = "cancelled";
@@ -318,9 +319,31 @@ export class TaskService implements vscode.Disposable {
     return snapshot;
   }
 
+  async cancelActiveTasks(): Promise<TaskBatchActionResult> {
+    const candidates = this.listAllTasks().filter((task) => this.canCancelTask(task.state));
+    let completed = 0;
+    let skipped = 0;
+
+    for (const task of candidates) {
+      const current = this.tasks.get(task.taskId);
+      if (!current || !this.canCancelTask(current.state)) {
+        skipped += 1;
+        continue;
+      }
+      await this.cancelTask(current.taskId);
+      completed += 1;
+    }
+
+    return {
+      requested: candidates.length,
+      completed,
+      skipped,
+    };
+  }
+
   async deleteTask(taskId: string): Promise<void> {
     const snapshot = this.getTask(taskId);
-    if (snapshot.state !== "completed" && snapshot.state !== "failed" && snapshot.state !== "cancelled") {
+    if (!this.canDeleteTask(snapshot.state)) {
       throw commandFailure(
         "TASK_NOT_DELETABLE",
         `Task ${snapshot.taskId} in state ${snapshot.state} cannot be deleted. Only completed, failed, or cancelled tasks can be deleted.`
@@ -331,6 +354,28 @@ export class TaskService implements vscode.Disposable {
     await this.storage.deleteTask(taskId);
     this.tasks.delete(taskId);
     this.emitter.fire();
+  }
+
+  async deleteTerminalTasks(): Promise<TaskBatchActionResult> {
+    const candidates = this.listAllTasks().filter((task) => this.canDeleteTask(task.state));
+    let completed = 0;
+    let skipped = 0;
+
+    for (const task of candidates) {
+      const current = this.tasks.get(task.taskId);
+      if (!current || !this.canDeleteTask(current.state)) {
+        skipped += 1;
+        continue;
+      }
+      await this.deleteTask(current.taskId);
+      completed += 1;
+    }
+
+    return {
+      requested: candidates.length,
+      completed,
+      skipped,
+    };
   }
 
   async continueLatestRecommended(): Promise<TaskSnapshot> {
@@ -732,6 +777,20 @@ export class TaskService implements vscode.Disposable {
     if (!this.providerStatus.ready) {
       throw commandFailure("PROVIDER_NOT_READY", this.providerStatus.detail);
     }
+  }
+
+  private canCancelTask(state: TaskState): boolean {
+    return (
+      state === "queued" ||
+      state === "running" ||
+      state === "waiting_decision" ||
+      state === "waiting_approval" ||
+      state === "interrupted"
+    );
+  }
+
+  private canDeleteTask(state: TaskState): boolean {
+    return state === "completed" || state === "failed" || state === "cancelled";
   }
 
   private findLatestTask(states?: TaskState[]): TaskSnapshot | null {

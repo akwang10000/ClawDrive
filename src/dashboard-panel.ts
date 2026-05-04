@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { getCurrentLocale, t } from "./i18n";
-import type { DashboardTaskCounts, DashboardTaskItem } from "./dashboard-tasks";
+import type { DashboardTaskBulkActions, DashboardTaskCounts, DashboardTaskItem } from "./dashboard-tasks";
+import type { TaskBatchActionResult } from "./tasks/types";
 
 export interface DashboardSnapshot {
   locale: string;
@@ -12,6 +13,7 @@ export interface DashboardSnapshot {
   providerStatus: string;
   commands: string[];
   taskCounts: DashboardTaskCounts;
+  bulkActions: DashboardTaskBulkActions;
   tasks: DashboardTaskItem[];
 }
 
@@ -22,6 +24,8 @@ type DashboardHandlers = {
   onDiagnose: () => Promise<void>;
   onCancelTask: (taskId: string) => Promise<void>;
   onDeleteTask: (taskId: string) => Promise<void>;
+  onCancelActiveTasks: () => Promise<TaskBatchActionResult>;
+  onClearFinishedTasks: () => Promise<TaskBatchActionResult>;
 };
 
 let panel: vscode.WebviewPanel | null = null;
@@ -94,6 +98,35 @@ export function showDashboardPanel(handlers: DashboardHandlers): void {
         }
         await handlers.onDeleteTask(taskId);
         await postSnapshot(handlers);
+        return;
+      }
+      if (type === "cancelActiveTasks") {
+        const count = handlers.getSnapshot().bulkActions.cancellable;
+        if (count <= 0) {
+          return;
+        }
+        const { message: confirmMessage, actionLabel } = getCancelActiveTasksConfirmation(handlers.getSnapshot().locale, count);
+        const confirmed = await vscode.window.showWarningMessage(confirmMessage, { modal: true }, actionLabel);
+        if (confirmed !== actionLabel) {
+          return;
+        }
+        await handlers.onCancelActiveTasks();
+        await postSnapshot(handlers);
+        return;
+      }
+      if (type === "clearFinishedTasks") {
+        const count = handlers.getSnapshot().bulkActions.deletable;
+        if (count <= 0) {
+          return;
+        }
+        const { message: confirmMessage, actionLabel } = getClearFinishedTasksConfirmation(handlers.getSnapshot().locale, count);
+        const confirmed = await vscode.window.showWarningMessage(confirmMessage, { modal: true }, actionLabel);
+        if (confirmed !== actionLabel) {
+          return;
+        }
+        await handlers.onClearFinishedTasks();
+        await postSnapshot(handlers);
+        return;
       }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -141,6 +174,32 @@ function getDeleteTaskConfirmation(locale: string): { message: string; actionLab
   return {
     message: "确定从本地任务历史中删除这个任务？此操作不可撤销。",
     actionLabel: "删除",
+  };
+}
+
+function getCancelActiveTasksConfirmation(locale: string, count: number): { message: string; actionLabel: string } {
+  if (locale === "en") {
+    return {
+      message: `Cancel ${count} active or resumable task${count === 1 ? "" : "s"}?`,
+      actionLabel: "Cancel Tasks",
+    };
+  }
+  return {
+    message: `确定取消 ${count} 个活跃或可恢复任务？`,
+    actionLabel: "批量取消",
+  };
+}
+
+function getClearFinishedTasksConfirmation(locale: string, count: number): { message: string; actionLabel: string } {
+  if (locale === "en") {
+    return {
+      message: `Delete ${count} finished task histor${count === 1 ? "y" : "ies"}? This cannot be undone.`,
+      actionLabel: "Clear Finished",
+    };
+  }
+  return {
+    message: `确定删除 ${count} 条终态任务历史？此操作不可撤销。`,
+    actionLabel: "清理终态",
   };
 }
 
@@ -412,6 +471,23 @@ function getHtml(cspSource: string, nonce: string): string {
       gap: 8px;
       align-self: start;
     }
+    .task-bulk-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .task-bulk-action {
+      padding: 8px 12px;
+      border-radius: 8px;
+    }
+    .task-bulk-action.delete {
+      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 74%, var(--vscode-errorForeground, #f14c4c) 26%);
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
     .task-action {
       padding: 8px 12px;
       border-radius: 8px;
@@ -487,6 +563,10 @@ function getHtml(cspSource: string, nonce: string): string {
         <div>
           <div class="title" id="tasksTitle"></div>
           <div class="hint" id="tasksHint"></div>
+          <div class="task-bulk-actions">
+            <button class="secondary task-bulk-action" id="cancelActiveTasks"></button>
+            <button class="secondary task-bulk-action delete" id="clearFinishedTasks"></button>
+          </div>
         </div>
         <div class="task-metrics">
           <div class="metric">
@@ -548,6 +628,8 @@ function getHtml(cspSource: string, nonce: string): string {
       lastUpdated: { "zh-CN": "\\u6700\\u540e\\u66f4\\u65b0", "en": "Last updated" },
       cancelTask: { "zh-CN": "\\u53d6\\u6d88", "en": "Cancel" },
       deleteTask: { "zh-CN": "\\u5220\\u9664", "en": "Delete" },
+      cancelActiveTasks: { "zh-CN": "批量取消", "en": "Cancel Active" },
+      clearFinishedTasks: { "zh-CN": "清理终态", "en": "Clear Finished" },
       confirmDelete: {
         "zh-CN": "\\u786e\\u5b9a\\u4ece\\u672c\\u5730\\u4efb\\u52a1\\u5386\\u53f2\\u4e2d\\u5220\\u9664\\u8fd9\\u4e2a\\u4efb\\u52a1\\uff1f\\u6b64\\u64cd\\u4f5c\\u4e0d\\u53ef\\u64a4\\u9500\\u3002",
         "en": "Delete this task from local history? This cannot be undone."
@@ -746,12 +828,21 @@ function getHtml(cspSource: string, nonce: string): string {
         });
       }
       renderTaskCounts(snapshot.taskCounts || { total: 0, active: 0, terminal: 0, byState: [] });
+      const bulkActions = snapshot.bulkActions || { cancellable: 0, deletable: 0 };
+      document.getElementById("cancelActiveTasks").disabled = bulkActions.cancellable <= 0;
+      document.getElementById("clearFinishedTasks").disabled = bulkActions.deletable <= 0;
       renderTasks(snapshot.tasks || []);
       applyCopy();
     }
     document.getElementById("connect").addEventListener("click", () => vscode.postMessage({ type: "connect" }));
     document.getElementById("settings").addEventListener("click", () => vscode.postMessage({ type: "settings" }));
     document.getElementById("diagnose").addEventListener("click", () => vscode.postMessage({ type: "diagnose" }));
+    document.getElementById("cancelActiveTasks").addEventListener("click", () => {
+      vscode.postMessage({ type: "cancelActiveTasks" });
+    });
+    document.getElementById("clearFinishedTasks").addEventListener("click", () => {
+      vscode.postMessage({ type: "clearFinishedTasks" });
+    });
     document.getElementById("taskList").addEventListener("click", (event) => {
       const button = event.target instanceof HTMLElement ? event.target.closest("button[data-action]") : null;
       if (!button) {

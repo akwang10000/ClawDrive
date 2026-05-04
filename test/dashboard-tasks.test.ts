@@ -28,6 +28,8 @@ test("buildDashboardTaskSnapshot pins active tasks above terminal tasks and deri
   assert.equal(snapshot.taskCounts.total, 4);
   assert.equal(snapshot.taskCounts.active, 2);
   assert.equal(snapshot.taskCounts.terminal, 2);
+  assert.equal(snapshot.bulkActions.cancellable, 2);
+  assert.equal(snapshot.bulkActions.deletable, 2);
 });
 
 function makeSnapshot(overrides: Partial<TaskSnapshot>): TaskSnapshot {
